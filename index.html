@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Voice Agent Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root {
+            color-scheme: light dark;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 24px;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        h1 {
+            margin-top: 0;
+            font-size: 1.6rem;
+        }
+        .panel {
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto 20px auto;
+            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
+        }
+        label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            background: rgba(15, 23, 42, 0.6);
+            color: inherit;
+            font-size: 1rem;
+            margin-bottom: 12px;
+        }
+        button {
+            cursor: pointer;
+            border: none;
+            border-radius: 24px;
+            padding: 10px 18px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+            font-size: 0.95rem;
+            transition: transform 0.15s ease, opacity 0.2s ease;
+            background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+            color: #0f172a;
+            font-weight: 600;
+        }
+        button.secondary {
+            background: transparent;
+            color: #e2e8f0;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+        }
+        button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+        button:not(:disabled):hover {
+            transform: translateY(-1px);
+        }
+        #log {
+            max-height: 380px;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+        .message {
+            margin-bottom: 14px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            line-height: 1.4;
+            background: rgba(30, 41, 59, 0.7);
+        }
+        .message.user {
+            border-left: 3px solid #38bdf8;
+        }
+        .message.agent {
+            border-left: 3px solid #a855f7;
+        }
+        .meta {
+            font-size: 0.8rem;
+            opacity: 0.7;
+            margin-top: 6px;
+        }
+        #status {
+            font-size: 0.9rem;
+            margin-top: 12px;
+            opacity: 0.8;
+        }
+        audio {
+            width: 100%;
+            margin-top: 6px;
+        }
+        .small-note {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+        @media (max-width: 600px) {
+            body {
+                padding: 16px;
+            }
+            .panel {
+                padding: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="panel">
+    <h1>Voice Agent Browser Demo</h1>
+    <p>
+        Use your Windows microphone to send a message to the running voice agent.
+        This page uses the browser's SpeechRecognition API—Chrome or Edge works best.
+    </p>
+    <label for="serverUrl">Voice agent URL</label>
+    <input id="serverUrl" type="text" data-default-url="http://localhost:5000/voice/conversation" autocomplete="off">
+    <div>
+        <button id="listenBtn">🎤 Start Listening</button>
+        <button id="stopBtn" class="secondary">Stop Listening</button>
+        <button id="sendBtn" class="secondary">Send Typed Message</button>
+    </div>
+    <input id="textInput" type="text" placeholder="...or type your question here">
+    <div id="status">Status: Idle</div>
+</div>
+
+<div class="panel">
+    <h2>Conversation</h2>
+    <div id="log"></div>
+    <div id="latency" class="small-note"></div>
+</div>
+
+<script>
+    const listenBtn = document.getElementById('listenBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const textInput = document.getElementById('textInput');
+    const serverUrlInput = document.getElementById('serverUrl');
+    const latencyEl = document.getElementById('latency');
+
+    const DEFAULT_SERVER_URL = window.VOICE_AGENT_URL
+        || localStorage.getItem('voiceAgentServerUrl')
+        || serverUrlInput.dataset.defaultUrl;
+    serverUrlInput.value = DEFAULT_SERVER_URL;
+
+    serverUrlInput.addEventListener('change', () => {
+        try {
+            localStorage.setItem('voiceAgentServerUrl', serverUrlInput.value.trim());
+        } catch (err) {
+            console.warn('Failed to persist server URL', err);
+        }
+    });
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let recognitionActive = false;
+    let listeningArmed = false;
+    let micAccessGranted = false;
+
+    let micStream = null;
+    let micStreamReadyPromise = null;
+    let audioContext = null;
+    let analyser = null;
+    let dataArray = null;
+    let volumeMonitorStarted = false;
+    let speaking = false;
+    let silenceStart = null;
+    let lastTranscript = '';
+    let streamingMessageEl = null;
+    let streamingTextBuffer = '';
+    let playbackController = null;
+    let playbackPending = false;
+    let shouldRearmAfterPlayback = false;
+    let lastVadStartAt = 0;
+    let lastVadStopAt = 0;
+    let lastPlaybackEndedAt = 0;
+
+    const START_THRESHOLD = 0.035;
+    const STOP_THRESHOLD = 0.018;
+    const SILENCE_HOLD_MS = 600;
+    const PLAYBACK_COOLDOWN_MS = 350;
+
+    const userId = `web-${crypto.randomUUID()}`;
+    const threadId = crypto.randomUUID();
+    let currentTurnMetrics = {
+        preambleLatency: null,
+        finalLatency: null,
+    };
+
+    function updateStatus(text) {
+        statusEl.textContent = text;
+    }
+
+    function resetTurnMetrics() {
+        currentTurnMetrics = {
+            preambleLatency: null,
+            finalLatency: null,
+        };
+        latencyEl.textContent = '';
+    }
+
+    function applyTurnMetrics() {
+        const parts = [];
+        if (typeof currentTurnMetrics.preambleLatency === 'number') {
+            parts.push(`Preamble: ${Math.round(currentTurnMetrics.preambleLatency)} ms`);
+        }
+        if (typeof currentTurnMetrics.finalLatency === 'number') {
+            parts.push(`Full response: ${Math.round(currentTurnMetrics.finalLatency)} ms`);
+        }
+        latencyEl.textContent = parts.join(' • ');
+    }
+
+    async function ensureMicPipeline() {
+        if (micAccessGranted) {
+            return true;
+        }
+        if (micStreamReadyPromise) {
+            try {
+                await micStreamReadyPromise;
+                return micAccessGranted;
+            } catch {
+                return false;
+            }
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            updateStatus('Status: Microphone not supported in this browser.');
+            return false;
+        }
+
+        micStreamReadyPromise = (async () => {
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    }
+                });
+
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                audioContext = new AudioContextClass();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 1024;
+                dataArray = new Float32Array(analyser.fftSize);
+
+                const source = audioContext.createMediaStreamSource(micStream);
+                source.connect(analyser);
+                await audioContext.resume().catch(() => {});
+
+                micAccessGranted = true;
+                console.log('[DEBUG] Microphone pipeline initialized');
+
+                ensureRecognition();
+                if (!volumeMonitorStarted) {
+                    volumeMonitorStarted = true;
+                    requestAnimationFrame(monitorVolume);
+                }
+            } catch (err) {
+                micAccessGranted = false;
+                micStream = null;
+                console.error('Microphone permission error', err);
+                updateStatus('Status: Microphone permission denied');
+                throw err;
+            }
+        })();
+
+        try {
+            await micStreamReadyPromise;
+            return micAccessGranted;
+        } catch {
+            micStreamReadyPromise = null;
+            return false;
+        }
+    }
+
+    function armListening() {
+        listeningArmed = true;
+        updateStatus('Status: Waiting for speech...');
+        listenBtn.disabled = true;
+        stopBtn.disabled = false;
+    }
+
+    function disarmListening() {
+        listeningArmed = false;
+        stopRecognition();
+        updateStatus('Status: Idle');
+        listenBtn.disabled = false;
+        stopBtn.disabled = true;
+    }
+
+    function startRecognitionIfNeeded() {
+        if (!listeningArmed) return;
+        if (!recognition || recognitionActive) return;
+        try {
+            recognition.start();
+        } catch (err) {
+            if (err.name !== 'InvalidStateError') {
+                console.warn('recognition.start error', err);
+            }
+        }
+    }
+
+    function stopRecognition() {
+        if (recognition && recognitionActive) {
+            try {
+                recognition.stop();
+            } catch (err) {
+                if (err.name !== 'InvalidStateError') {
+                    console.warn('recognition.stop error', err);
+                }
+            }
+        }
+    }
+
+    function ensureRecognition() {
+        if (recognition || !SpeechRecognition) {
+            return;
+        }
+        recognition = new SpeechRecognition();
+        recognition.lang = 'en-US';
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
+        recognition.continuous = true;
+
+        recognition.onstart = () => {
+            recognitionActive = true;
+            lastTranscript = '';
+            console.log('[DEBUG] recognition started');
+            updateStatus('Status: Transcribing...');
+            listenBtn.disabled = true;
+            stopBtn.disabled = false;
+        };
+
+        recognition.onend = () => {
+            recognitionActive = false;
+            console.log('[DEBUG] recognition ended');
+            if (!listeningArmed) {
+                if (playbackController || playbackPending) {
+                    updateStatus('Status: Playing response...');
+                    listenBtn.disabled = true;
+                    stopBtn.disabled = true;
+                } else {
+                    updateStatus('Status: Idle');
+                    listenBtn.disabled = false;
+                    stopBtn.disabled = true;
+                }
+            } else {
+                updateStatus('Status: Waiting for speech...');
+            }
+        };
+
+        recognition.onresult = (event) => {
+            if (!listeningArmed) {
+                return;
+            }
+            for (let i = event.resultIndex; i < event.results.length; i += 1) {
+                const result = event.results[i];
+                if (result.isFinal) {
+                    const transcript = (result[0] && result[0].transcript || '').trim();
+                    if (transcript && transcript !== lastTranscript) {
+                        lastTranscript = transcript;
+                        console.log('[DEBUG] Speech final:', transcript);
+                        appendMessage('user', transcript);
+                        sendToAgent(transcript);
+                    }
+                }
+            }
+        };
+
+        recognition.onerror = (event) => {
+            console.warn('Speech recognition error', event);
+            recognitionActive = false;
+            if (!listeningArmed) {
+                updateStatus('Status: Idle');
+            } else {
+                updateStatus('Status: Waiting for speech...');
+            }
+        };
+    }
+
+    function monitorVolume() {
+        if (!analyser || !dataArray) {
+            requestAnimationFrame(monitorVolume);
+            return;
+        }
+
+        analyser.getFloatTimeDomainData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i += 1) {
+            const sample = dataArray[i];
+            sum += sample * sample;
+        }
+        const rms = Math.sqrt(sum / dataArray.length) || 0;
+        const now = performance.now();
+        const playbackActive = !!playbackController;
+        const withinCooldown = (now - lastPlaybackEndedAt) < PLAYBACK_COOLDOWN_MS;
+
+        if (playbackActive || withinCooldown) {
+            speaking = false;
+            silenceStart = null;
+            requestAnimationFrame(monitorVolume);
+            return;
+        }
+
+        if (!listeningArmed) {
+            speaking = false;
+            silenceStart = null;
+            requestAnimationFrame(monitorVolume);
+            return;
+        }
+
+        if (!speaking && rms > START_THRESHOLD) {
+            speaking = true;
+            lastVadStartAt = now;
+            startRecognitionIfNeeded();
+        } else if (speaking) {
+            if (rms < STOP_THRESHOLD) {
+                if (silenceStart === null) {
+                    silenceStart = now;
+                } else if ((now - silenceStart) >= SILENCE_HOLD_MS) {
+                    speaking = false;
+                    lastVadStopAt = now;
+                    silenceStart = null;
+                    stopRecognition();
+                    updateStatus('Status: Waiting for speech...');
+                }
+            } else {
+                silenceStart = null;
+            }
+        }
+
+        requestAnimationFrame(monitorVolume);
+    }
+
+    async function startListening() {
+        if (!SpeechRecognition) {
+            listenBtn.disabled = true;
+            stopBtn.disabled = true;
+            updateStatus('Status: Speech recognition not supported in this browser.');
+            return;
+        }
+        updateStatus('Status: Initializing microphone...');
+        const ready = await ensureMicPipeline();
+        if (!ready) {
+            listenBtn.disabled = false;
+            stopBtn.disabled = true;
+            return;
+        }
+        ensureRecognition();
+        armListening();
+    }
+
+    function stopListening() {
+        disarmListening();
+        speaking = false;
+        silenceStart = null;
+        playbackPending = false;
+        shouldRearmAfterPlayback = false;
+    }
+
+    function pauseListeningForPlayback() {
+        if (!micAccessGranted) {
+            return;
+        }
+        shouldRearmAfterPlayback = listeningArmed;
+        playbackPending = true;
+        listeningArmed = false;
+        stopRecognition();
+        updateStatus('Status: Playing response...');
+        listenBtn.disabled = true;
+        stopBtn.disabled = true;
+    }
+
+    function resumeListeningAfterPlayback() {
+        playbackPending = false;
+        lastPlaybackEndedAt = performance.now();
+        if (shouldRearmAfterPlayback) {
+            setTimeout(() => {
+                shouldRearmAfterPlayback = false;
+                armListening();
+            }, PLAYBACK_COOLDOWN_MS);
+        } else {
+            updateStatus('Status: Idle');
+            listenBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+    }
+
+    if (!SpeechRecognition) {
+        listenBtn.disabled = true;
+        stopBtn.disabled = true;
+        updateStatus('Status: Speech recognition not supported in this browser.');
+    } else {
+        stopBtn.disabled = true;
+    }
+
+    listenBtn.addEventListener('click', () => {
+        startListening();
+    });
+
+    stopBtn.addEventListener('click', () => {
+        stopListening();
+    });
+
+    sendBtn.addEventListener('click', () => {
+        const message = textInput.value.trim();
+        if (!message) {
+            return;
+        }
+        appendMessage('user', message);
+        sendToAgent(message);
+        textInput.value = '';
+    });
+
+    textInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            sendBtn.click();
+        }
+    });
+
+    async function sendToAgent(message) {
+        const endpoint = (serverUrlInput.value || '').trim() || serverUrlInput.dataset.defaultUrl;
+        serverUrlInput.value = endpoint;
+        try {
+            localStorage.setItem('voiceAgentServerUrl', endpoint);
+        } catch (err) {
+            console.warn('Failed to persist server URL', err);
+        }
+        const requestBody = {
+            user_id: userId,
+            thread_id: threadId,
+            rooftop_id: '6',
+            message,
+        };
+
+        try {
+            resetTurnMetrics();
+            updateStatus('Status: Contacting voice agent...');
+            console.log('[DEBUG] sending to agent:', message);
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`HTTP ${response.status}: ${text}`);
+            }
+
+            updateStatus('Status: Streaming response...');
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                let newlineIndex;
+                while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+                    const rawLine = buffer.slice(0, newlineIndex).trim();
+                    buffer = buffer.slice(newlineIndex + 1);
+                    if (!rawLine) {
+                        continue;
+                    }
+                    let event;
+                    try {
+                        event = JSON.parse(rawLine);
+                    } catch (err) {
+                        console.warn('Failed to parse stream chunk', err, rawLine);
+                        continue;
+                    }
+                    handleStreamEvent(event);
+                }
+            }
+
+            updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
+        } catch (err) {
+            console.error(err);
+            statusEl.textContent = `Status: Error - ${err.message}`;
+            appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
+        }
+    }
+
+    function appendMessage(role, text, label = null) {
+        const item = document.createElement('div');
+        item.className = `message ${role}`;
+        const title = label ? `<strong>${label}:</strong> ` : '';
+        item.innerHTML = `${title}${escapeHtml(text)}`;
+        logEl.appendChild(item);
+        logEl.scrollTop = logEl.scrollHeight;
+        return item;
+    }
+
+    let audioQueue = Promise.resolve();
+
+    function playAudioSegment(segment, delayFinal = false) {
+        if (!segment) return;
+        const chunkList = Array.isArray(segment.chunks) && segment.chunks.length
+            ? [...segment.chunks]
+            : (segment.base64 ? [segment.base64] : []);
+        if (!chunkList.length) return;
+
+        audioQueue = audioQueue.then(() => new Promise((resolve) => {
+            playbackPending = true;
+            pauseListeningForPlayback();
+
+            const playNext = (index) => {
+                if (index >= chunkList.length) {
+                    resumeListeningAfterPlayback();
+                    playbackController = null;
+                    resolve();
+                    return;
+                }
+
+                try {
+                    const binary = atob(chunkList[index]);
+                    const buffer = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i += 1) {
+                        buffer[i] = binary.charCodeAt(i);
+                    }
+                    const blob = new Blob([buffer], { type: `audio/${segment.format || 'mp3'}` });
+                    const url = URL.createObjectURL(blob);
+                    const audio = new Audio(url);
+                    let cancelled = false;
+
+                    playbackPending = false;
+                    playbackController = {
+                        abort() {
+                            if (cancelled) return;
+                            cancelled = true;
+                            try {
+                                audio.pause();
+                            } catch (err) {
+                                /* ignore */
+                            }
+                            URL.revokeObjectURL(url);
+                            resumeListeningAfterPlayback();
+                            playbackController = null;
+                            resolve();
+                        }
+                    };
+
+                    const startPlayback = () => audio.play().catch((err) => {
+                        console.warn('Failed to play audio chunk', err);
+                        URL.revokeObjectURL(url);
+                        playbackController = null;
+                        playNext(index + 1);
+                    });
+
+                    audio.onended = () => {
+                        URL.revokeObjectURL(url);
+                        if (cancelled) {
+                            playbackController = null;
+                            return;
+                        }
+                        playNext(index + 1);
+                    };
+                    audio.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        playbackController = null;
+                        playNext(index + 1);
+                    };
+
+                    if (delayFinal && index === 0) {
+                        setTimeout(startPlayback, 450);
+                    } else {
+                        startPlayback();
+                    }
+                } catch (err) {
+                    console.warn('Failed to decode audio chunk', err);
+                    playNext(index + 1);
+                }
+            };
+
+            playNext(0);
+        }));
+    }
+    function stopCurrentPlayback() {
+        if (playbackController) {
+            const controller = playbackController;
+            playbackController = null;
+            controller.abort();
+        }
+    }
+
+    function handleStreamEvent(event) {
+        if (!event || typeof event !== 'object') {
+            return;
+        }
+
+        switch (event.type) {
+            case 'session':
+                console.log('[DEBUG] Stream session', event.user_id, event.thread_id);
+                break;
+            case 'error':
+                appendMessage('agent', 'I hit a snag finishing that response—mind giving me just a second and trying again?');
+                updateStatus('Status: Error encountered');
+                break;
+            case 'preamble_text':
+                if (event.message) {
+                    appendMessage('agent', event.message, 'Preamble');
+                }
+                if (event.metadata && typeof event.metadata.latency_ms === 'number') {
+                    currentTurnMetrics.preambleLatency = event.metadata.latency_ms;
+                    applyTurnMetrics();
+                }
+                break;
+            case 'preamble_audio':
+                if (event.audio && event.audio.b64) {
+                    playAudioSegment({
+                        format: event.audio.format || 'mp3',
+                        chunks: [event.audio.b64],
+                    });
+                }
+                break;
+            case 'final_text': {
+                const response = event.response || {};
+                streamingTextBuffer = '';
+                streamingMessageEl = null;
+                if (event.metadata && typeof event.metadata.orchestration_latency_ms === 'number') {
+                    currentTurnMetrics.finalLatency = event.metadata.orchestration_latency_ms;
+                    applyTurnMetrics();
+                }
+                break;
+            }
+            case 'final_audio_text': {
+                const text = typeof event.text === 'string' ? event.text.trim() : '';
+                if (!text) break;
+                streamingTextBuffer = streamingTextBuffer
+                    ? `${streamingTextBuffer} ${text}`
+                    : text;
+                const labelPrefix = '<strong>Response:</strong> ';
+                const htmlText = `${labelPrefix}${escapeHtml(streamingTextBuffer)}`;
+                if (!streamingMessageEl) {
+                    streamingMessageEl = appendMessage('agent', streamingTextBuffer, 'Response');
+                } else {
+                    streamingMessageEl.innerHTML = htmlText;
+                }
+                break;
+            }
+            case 'final_audio':
+                if (event.audio && event.audio.b64) {
+                    const delay = Number(event.sequence || 0) === 1;
+                    playAudioSegment(
+                        {
+                            format: event.audio.format || 'mp3',
+                            chunks: [event.audio.b64],
+                        },
+                        delay
+                    );
+                }
+                break;
+            default:
+                console.log('[DEBUG] Unhandled stream event', event);
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    (async () => {
+        const isSecureOrigin =
+            window.location.protocol === 'https:' ||
+            window.location.hostname === 'localhost';
+        if (!isSecureOrigin) {
+            updateStatus('Status: Use HTTPS or https://localhost to persist microphone permission.');
+        }
+        if (navigator.permissions && navigator.permissions.query) {
+            try {
+                const status = await navigator.permissions.query({ name: 'microphone' });
+                console.log('[MIC PERMISSION]', status.state);
+                if (status.state === 'denied') {
+                    appendMessage(
+                        'agent',
+                        'Microphone access is blocked. Click the lock icon in your browser, open Site settings, and allow microphone access.',
+                        'Notice'
+                    );
+                }
+            } catch (err) {
+                console.warn('Permission query failed', err);
+            }
+        }
+    })();
+</script>
+</body>
+</html>
