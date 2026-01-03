@@ -1,866 +1,348 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Voice Agent Demo</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Voice Agent Browser Demo</title>
   <style>
-    :root {
-      color-scheme: light dark;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    body {
-      margin: 0;
-      padding: 24px;
-      background: #0f172a;
-      color: #e2e8f0;
-    }
-    h1 { margin-top: 0; font-size: 1.6rem; }
-    .panel {
-      background: rgba(15, 23, 42, 0.85);
-      border: 1px solid rgba(148, 163, 184, 0.3);
-      border-radius: 12px;
-      padding: 20px;
-      max-width: 900px;
-      margin: 0 auto 20px auto;
-      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
-    }
-    label { display:block; margin-bottom:4px; font-weight:500; }
-    input[type="text"]{
-      width: 100%;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid rgba(148, 163, 184, 0.35);
-      background: rgba(15, 23, 42, 0.6);
-      color: inherit;
-      font-size: 1rem;
-      margin-bottom: 12px;
-    }
-    .row { display:flex; gap:12px; flex-wrap: wrap; align-items:center; }
-    .control {
-      display:flex; align-items:center; gap:8px;
-      padding: 8px 10px;
-      border-radius: 10px;
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      background: rgba(15, 23, 42, 0.45);
-    }
-    .control label { margin:0; font-size: .9rem; opacity:.9; }
-    .control input[type="range"]{ width: 180px; }
-    button {
-      cursor: pointer;
-      border: none;
-      border-radius: 24px;
-      padding: 10px 18px;
-      margin-right: 10px;
-      margin-bottom: 10px;
-      font-size: 0.95rem;
-      transition: transform 0.15s ease, opacity 0.2s ease;
-      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
-      color: #0f172a;
-      font-weight: 600;
-    }
-    button.secondary {
-      background: transparent;
-      color: #e2e8f0;
-      border: 1px solid rgba(148, 163, 184, 0.4);
-    }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    button:not(:disabled):hover { transform: translateY(-1px); }
-
-    #log { max-height: 420px; overflow-y: auto; padding-right: 8px; }
-    .message {
-      margin-bottom: 14px;
-      padding: 12px 14px;
-      border-radius: 10px;
-      line-height: 1.4;
-      background: rgba(30, 41, 59, 0.7);
-    }
-    .message.user { border-left: 3px solid #38bdf8; }
-    .message.agent { border-left: 3px solid #a855f7; }
-    .meta { font-size: 0.8rem; opacity: 0.7; margin-top: 6px; }
-    #status { font-size: 0.9rem; margin-top: 12px; opacity: 0.85; }
-    .small-note { font-size: 0.8rem; opacity: 0.7; }
-    .warn { color: #fbbf24; }
-    @media (max-width: 600px) {
-      body { padding: 16px; }
-      .panel { padding: 16px; }
-      .control input[type="range"]{ width: 140px; }
-    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    input[type="text"] { width: min(980px, 100%); padding: 10px; font-size: 14px; }
+    textarea { width: min(980px, 100%); height: 110px; padding: 10px; font-size: 14px; }
+    button { padding: 10px 14px; font-size: 14px; cursor: pointer; }
+    .status { padding: 8px 10px; border-radius: 8px; background: #f2f2f2; display: inline-block; }
+    .warn { background: #fff3cd; border: 1px solid #ffeeba; padding: 10px; border-radius: 8px; }
+    pre { background: #0b1020; color: #d7e2ff; padding: 12px; border-radius: 10px; overflow: auto; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; width: min(980px, 100%); }
+    .muted { color: #666; font-size: 13px; }
+    label { font-weight: 600; }
   </style>
 </head>
-
 <body>
-  <div class="panel">
-    <h1>Voice Agent Browser Demo</h1>
-    <div id="sessionInfo" class="small-note"></div>
-    <p>
-      This page continuously listens (optional) and uses thresholding to detect speech start/end.
-      It sends audio to the backend for transcription using the same request/response format you already have.
-      It also supports barge-in (interrupt playback when you start talking).
-    </p>
+  <h2>Voice Agent Browser Demo</h2>
 
-    <label for="serverUrl">Voice agent URL</label>
-    <input id="serverUrl" type="text" autocomplete="off" />
+  <div class="card">
+    <div class="row">
+      <label for="voiceUrl">Voice agent URL</label>
+    </div>
+    <div class="row">
+      <input id="voiceUrl" type="text" />
+    </div>
+    <div class="row muted">
+      Endpoint must be <code>POST</code> and audio uses <code>multipart/form-data</code> field <code>audio</code>.
+    </div>
+  </div>
+
+  <div id="secureWarn" class="warn" style="display:none; margin-top:12px;">
+    <b>Mic permission warning:</b> Browsers only allow microphone recording on a <b>secure context</b>
+    (HTTPS) or <b>http://localhost</b>. If you opened this as <code>file://</code> or from plain HTTP,
+    the mic may be blocked.<br/>
+    <span class="muted">Quick fix: run <code>python -m http.server 8000</code> in this folder and open
+    <code>http://localhost:8000/index.html</code>.</span>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <div class="row">
+      <button id="startBtn">🎤 Start Listening</button>
+      <button id="stopBtn" disabled>⏹ Stop Listening</button>
+      <button id="sendAudioBtn" disabled>📤 Send Audio</button>
+      <span class="status" id="status">Status: Idle</span>
+    </div>
 
     <div class="row">
-      <button id="listenBtn">🎤 Start Listening</button>
-      <button id="stopBtn" class="secondary">Stop Listening</button>
-      <button id="sendBtn" class="secondary">Send Typed Message</button>
+      <label for="typedMsg">...or type your question here</label>
+    </div>
+    <div class="row">
+      <textarea id="typedMsg" placeholder="Type a message and click Send Typed Message"></textarea>
+    </div>
+    <div class="row">
+      <button id="sendTypedBtn">Send Typed Message</button>
     </div>
 
-    <div class="row" style="margin: 6px 0 12px 0;">
-      <div class="control">
-        <label><input id="alwaysOnToggle" type="checkbox" checked /> Always listening (VAD)</label>
-      </div>
-      <div class="control">
-        <label for="vadThreshold">Threshold</label>
-        <input id="vadThreshold" type="range" min="0.01" max="0.25" step="0.005" value="0.06" />
-        <span id="vadThresholdVal" class="small-note">0.06</span>
-      </div>
-      <div class="control">
-        <label for="silenceMs">Silence ms</label>
-        <input id="silenceMs" type="range" min="400" max="3500" step="50" value="1200" />
-        <span id="silenceMsVal" class="small-note">1200</span>
-      </div>
-      <div class="control">
-        <label><input id="bargeInToggle" type="checkbox" checked /> Allow interrupt</label>
-      </div>
+    <div class="row muted">
+      Optional IDs (recommended stable per session): user_id / thread_id / rooftop_id
     </div>
-
-    <input id="textInput" type="text" placeholder="...or type your question here" />
-    <div id="status">Status: Idle</div>
-    <div id="originHint" class="small-note"></div>
+    <div class="row">
+      <input id="userId" type="text" placeholder="user_id (optional)" />
+      <input id="threadId" type="text" placeholder="thread_id (optional)" />
+      <input id="rooftopId" type="text" placeholder="rooftop_id (optional, default 6)" />
+    </div>
   </div>
 
-  <div class="panel">
-    <h2>Conversation</h2>
+  <div class="card" style="margin-top:12px;">
+    <h3 style="margin-top:0;">Conversation</h3>
     <div id="log"></div>
-    <div id="latency" class="small-note"></div>
   </div>
 
-  <script>
-    // -----------------------------
-    // Defaults / helpers
-    // -----------------------------
-    const listenBtn = document.getElementById('listenBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const sendBtn = document.getElementById('sendBtn');
-    const statusEl = document.getElementById('status');
-    const logEl = document.getElementById('log');
-    const textInput = document.getElementById('textInput');
-    const serverUrlInput = document.getElementById('serverUrl');
-    const latencyEl = document.getElementById('latency');
-    const sessionInfoEl = document.getElementById('sessionInfo');
-    const originHintEl = document.getElementById('originHint');
+  <div class="card" style="margin-top:12px;">
+    <h3 style="margin-top:0;">Raw response (debug)</h3>
+    <pre id="raw">(none yet)</pre>
+  </div>
 
-    const alwaysOnToggle = document.getElementById('alwaysOnToggle');
-    const bargeInToggle = document.getElementById('bargeInToggle');
-    const vadThreshold = document.getElementById('vadThreshold');
-    const vadThresholdVal = document.getElementById('vadThresholdVal');
-    const silenceMs = document.getElementById('silenceMs');
-    const silenceMsVal = document.getElementById('silenceMsVal');
+<script>
+(() => {
+  // MUST be set to the :5000 endpoint you provided
+  const DEFAULT_VOICE_URL = "http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation";
 
-    // ✅ Default: full URL w/ scheme (fixes “missing scheme => relative path => weird 405s”)
-    const DEFAULT_SERVER_URL =
-      window.VOICE_AGENT_URL ||
-      localStorage.getItem('voiceAgentServerUrl') ||
-      'https://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com/voice/conversation';
+  const voiceUrlEl = document.getElementById("voiceUrl");
+  const startBtn = document.getElementById("startBtn");
+  const stopBtn = document.getElementById("stopBtn");
+  const sendAudioBtn = document.getElementById("sendAudioBtn");
+  const sendTypedBtn = document.getElementById("sendTypedBtn");
+  const statusEl = document.getElementById("status");
+  const rawEl = document.getElementById("raw");
+  const logEl = document.getElementById("log");
 
-    // If user pastes host/path without scheme, auto-prepend https://
-    function normalizeEndpoint(raw) {
-      const trimmed = (raw || '').trim();
-      if (!trimmed) return DEFAULT_SERVER_URL;
+  const typedMsgEl = document.getElementById("typedMsg");
+  const userIdEl = document.getElementById("userId");
+  const threadIdEl = document.getElementById("threadId");
+  const rooftopIdEl = document.getElementById("rooftopId");
 
-      // Already absolute
-      if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  voiceUrlEl.value = DEFAULT_VOICE_URL;
 
-      // If it looks like a domain (has a dot) or an AWS ELB hostname, assume https
-      if (trimmed.includes('.') && !trimmed.startsWith('/')) {
-        return `https://${trimmed}`;
-      }
+  // Secure context check for mic
+  const isSecureOrigin =
+    window.location.protocol === "https:" ||
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1";
+  if (!isSecureOrigin) {
+    document.getElementById("secureWarn").style.display = "block";
+  }
 
-      // Otherwise treat as relative path
-      return trimmed;
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let lastAudioBlob = null;
+
+  function setStatus(msg) {
+    statusEl.textContent = "Status: " + msg;
+  }
+
+  function escapeHtml(s) {
+    return (s || "").replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+  }
+
+  function addLogCard(title, bodyHtml) {
+    const div = document.createElement("div");
+    div.style.borderTop = "1px solid #eee";
+    div.style.padding = "10px 0";
+    div.innerHTML = `<div><b>${escapeHtml(title)}</b></div><div style="margin-top:6px;">${bodyHtml}</div>`;
+    logEl.prepend(div);
+  }
+
+  async function playAudioSegments(segments) {
+    if (!Array.isArray(segments) || segments.length === 0) return;
+
+    // sort by sequence, then play one-by-one
+    const sorted = [...segments].sort((a,b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+
+    for (const seg of sorted) {
+      const b64 = seg?.audio?.b64;
+      if (!b64) continue;
+
+      const wavBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const blob = new Blob([wavBytes], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+
+      await new Promise((resolve) => {
+        const audio = new Audio(url);
+        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.play().catch(() => { URL.revokeObjectURL(url); resolve(); });
+      });
+    }
+  }
+
+  function buildOptionalFields(formOrObj) {
+    const user_id = userIdEl.value.trim();
+    const thread_id = threadIdEl.value.trim();
+    const rooftop_id = rooftopIdEl.value.trim();
+
+    // If it's FormData
+    if (formOrObj instanceof FormData) {
+      if (user_id) formOrObj.append("user_id", user_id);
+      if (thread_id) formOrObj.append("thread_id", thread_id);
+      if (rooftop_id) formOrObj.append("rooftop_id", rooftop_id);
+    } else {
+      if (user_id) formOrObj.user_id = user_id;
+      if (thread_id) formOrObj.thread_id = thread_id;
+      if (rooftop_id) formOrObj.rooftop_id = rooftop_id;
+    }
+  }
+
+  async function sendAudio(blob) {
+    const url = voiceUrlEl.value.trim();
+    if (!url) return;
+
+    setStatus("Uploading audio…");
+
+    const form = new FormData();
+    // Backend expects field name "audio"
+    form.append("audio", blob, "recording.webm");
+    buildOptionalFields(form);
+
+    const res = await fetch(url, { method: "POST", body: form });
+    const text = await res.text();
+
+    if (!res.ok) {
+      setStatus(`Error - HTTP ${res.status}`);
+      addLogCard("Server error", `<pre>${escapeHtml(text)}</pre>`);
+      rawEl.textContent = text;
+      return;
     }
 
-    serverUrlInput.value = normalizeEndpoint(DEFAULT_SERVER_URL);
+    let data;
+    try { data = JSON.parse(text); }
+    catch {
+      setStatus("Error - Non-JSON response");
+      addLogCard("Non-JSON response", `<pre>${escapeHtml(text)}</pre>`);
+      rawEl.textContent = text;
+      return;
+    }
 
-    serverUrlInput.addEventListener('change', () => {
-      const normalized = normalizeEndpoint(serverUrlInput.value);
-      serverUrlInput.value = normalized;
-      try { localStorage.setItem('voiceAgentServerUrl', normalized); } catch (err) {}
+    rawEl.textContent = JSON.stringify(data, null, 2);
+
+    // Render transcript + combined spoken response
+    const transcript = data.transcript ? `<div><b>Transcript:</b> ${escapeHtml(data.transcript)}</div>` : "";
+    const r = data.response || {};
+    const spoken = [r.prefixMessage, r.suffixMessage, r.followUpMessage].filter(Boolean).join(" ").trim();
+    const vins = Array.isArray(r.vins) ? r.vins : [];
+    const vinsHtml = vins.length ? `<div class="muted">VINs: ${escapeHtml(vins.join(", "))}</div>` : "";
+
+    addLogCard(
+      "Audio → Response",
+      `${transcript}<div style="margin-top:6px;">${escapeHtml(spoken || "(empty response)")}</div>${vinsHtml}`
+    );
+
+    // Play returned TTS audio segments if present
+    if (Array.isArray(data.audio_segments) && data.audio_segments.length) {
+      setStatus("Playing response audio…");
+      await playAudioSegments(data.audio_segments);
+      setStatus("Done");
+    } else {
+      setStatus("Done (no audio_segments returned)");
+    }
+  }
+
+  async function sendTypedMessage() {
+    const url = voiceUrlEl.value.trim();
+    const message = typedMsgEl.value.trim();
+    if (!url) return;
+    if (!message) {
+      addLogCard("Client", "<i>Please type a message first.</i>");
+      return;
+    }
+
+    setStatus("Sending typed message…");
+
+    const payload = { message };
+    buildOptionalFields(payload);
+    if (!payload.rooftop_id) payload.rooftop_id = "6";
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
 
-    vadThresholdVal.textContent = Number(vadThreshold.value).toFixed(3);
-    silenceMsVal.textContent = String(silenceMs.value);
+    const text = await res.text();
 
-    vadThreshold.addEventListener('input', () => {
-      vadThresholdVal.textContent = Number(vadThreshold.value).toFixed(3);
-    });
-    silenceMs.addEventListener('input', () => {
-      silenceMsVal.textContent = String(silenceMs.value);
-    });
-
-    // -----------------------------
-    // Session IDs (same as your v2)
-    // -----------------------------
-    function loadOrInitUserId() {
-      const storageKey = 'voiceAgentUserId';
-      const stored = localStorage.getItem(storageKey);
-      if (stored) return stored;
-      const token = crypto.randomUUID().split('-')[0];
-      const generated = `VOICETEST-${token}`;
-      localStorage.setItem(storageKey, generated);
-      return generated;
+    if (!res.ok) {
+      setStatus(`Error - HTTP ${res.status}`);
+      addLogCard("Server error", `<pre>${escapeHtml(text)}</pre>`);
+      rawEl.textContent = text;
+      return;
     }
 
-    const userId = loadOrInitUserId();
-    const threadId = crypto.randomUUID();
-    const rooftopId = '6';
-
-    sessionInfoEl.textContent = `Session ID: ${userId}`;
-
-    let currentTurnMetrics = { preambleLatency: null, finalLatency: null };
-
-    function updateStatus(text) { statusEl.textContent = text; }
-    function resetTurnMetrics() {
-      currentTurnMetrics = { preambleLatency: null, finalLatency: null };
-      latencyEl.textContent = '';
-    }
-    function applyTurnMetrics() {
-      const parts = [];
-      if (typeof currentTurnMetrics.preambleLatency === 'number') {
-        parts.push(`Preamble: ${Math.round(currentTurnMetrics.preambleLatency)} ms`);
-      }
-      if (typeof currentTurnMetrics.finalLatency === 'number') {
-        parts.push(`Full response: ${Math.round(currentTurnMetrics.finalLatency)} ms`);
-      }
-      latencyEl.textContent = parts.join(' • ');
+    let data;
+    try { data = JSON.parse(text); }
+    catch {
+      setStatus("Error - Non-JSON response");
+      addLogCard("Non-JSON response", `<pre>${escapeHtml(text)}</pre>`);
+      rawEl.textContent = text;
+      return;
     }
 
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+    rawEl.textContent = JSON.stringify(data, null, 2);
+
+    const r = data.response || {};
+    const spoken = [r.prefixMessage, r.suffixMessage, r.followUpMessage].filter(Boolean).join(" ").trim();
+    const vins = Array.isArray(r.vins) ? r.vins : [];
+
+    addLogCard(
+      "Text → Response",
+      `<div><b>You:</b> ${escapeHtml(message)}</div>
+       <div style="margin-top:6px;"><b>Agent:</b> ${escapeHtml(spoken || "(empty response)")}</div>
+       ${vins.length ? `<div class="muted">VINs: ${escapeHtml(vins.join(", "))}</div>` : ""}`
+    );
+
+    // Some servers may still return audio_segments even for text input. If present, play them.
+    if (Array.isArray(data.audio_segments) && data.audio_segments.length) {
+      setStatus("Playing response audio…");
+      await playAudioSegments(data.audio_segments);
+      setStatus("Done");
+    } else {
+      setStatus("Done");
     }
+  }
 
-    function appendMessage(role, text, label = null) {
-      const item = document.createElement('div');
-      item.className = `message ${role}`;
-      const title = label ? `<strong>${label}:</strong> ` : '';
-      item.innerHTML = `${title}${escapeHtml(text)}`;
-      logEl.appendChild(item);
-      logEl.scrollTop = logEl.scrollHeight;
-      return item;
-    }
+  startBtn.addEventListener("click", async () => {
+    audioChunks = [];
+    lastAudioBlob = null;
 
-    // -----------------------------
-    // Mic + VAD + MediaRecorder
-    // -----------------------------
-    let micAccessGranted = false;
-    let micStream = null;
-    let mediaRecorder = null;
-    let recordingActive = false;
-    let recordedChunks = [];
-    let lastRecorderMime = 'audio/webm';
+    try {
+      setStatus("Requesting microphone permission…");
 
-    // VAD
-    let audioContext = null;
-    let analyser = null;
-    let analyserData = null;
-    let vadLoopRunning = false;
-    let silenceStartAt = null;
+      // Prefer audio/webm. If unsupported, MediaRecorder may still work with browser defaults.
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    // UI state
-    let listeningArmed = false;
-
-    // Playback / barge-in
-    let audioQueue = Promise.resolve();
-    let playbackController = null;
-    let audioPlaying = false;
-
-    function pickRecorderMimeType() {
-      if (!window.MediaRecorder) return '';
-      const candidates = [
-        'audio/webm;codecs=opus',
-        'audio/ogg;codecs=opus',
-        'audio/webm',
-        'audio/ogg',
-      ];
-      for (const c of candidates) {
-        if (MediaRecorder.isTypeSupported(c)) return c;
-      }
-      return '';
-    }
-
-    async function ensureMicPipeline() {
-      if (micAccessGranted && micStream && analyser && audioContext) return true;
-
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        updateStatus('Status: Microphone not supported in this browser.');
-        return false;
+      const options = {};
+      if (MediaRecorder.isTypeSupported("audio/webm")) {
+        options.mimeType = "audio/webm";
       }
 
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            sampleRate: 16000,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          }
-        });
-
-        // AudioContext + analyser for VAD + optional visualization later
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioContext.createMediaStreamSource(micStream);
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 2048;
-        source.connect(analyser);
-        analyserData = new Uint8Array(analyser.fftSize);
-
-        micAccessGranted = true;
-        console.log('[DEBUG] Mic pipeline ready');
-        return true;
-      } catch (err) {
-        console.error('Microphone permission error', err);
-        updateStatus('Status: Microphone permission denied');
-        micAccessGranted = false;
-        micStream = null;
-        return false;
-      }
-    }
-
-    function startRecording() {
-      if (!micStream || recordingActive) return;
-
-      const mimeType = pickRecorderMimeType();
-      recordedChunks = [];
-      lastRecorderMime = mimeType || 'audio/webm';
-
-      try {
-        mediaRecorder = mimeType
-          ? new MediaRecorder(micStream, { mimeType })
-          : new MediaRecorder(micStream);
-      } catch (err) {
-        console.error('Failed to start recorder', err);
-        updateStatus('Status: Recorder failed to start');
-        return;
-      }
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+      mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunks.push(e.data);
       };
-
-      mediaRecorder.onstop = async () => {
-        recordingActive = false;
-        const blob = new Blob(recordedChunks, { type: lastRecorderMime });
-        recordedChunks = [];
-
-        if (blob.size === 0) return;
-
-        // Send audio
-        await sendAudioToAgent(blob, lastRecorderMime);
+      mediaRecorder.onstop = () => {
+        // Stop tracks so mic isn’t held open
+        stream.getTracks().forEach(t => t.stop());
+        lastAudioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+        sendAudioBtn.disabled = !lastAudioBlob;
+        setStatus(lastAudioBlob ? `Recorded (${Math.round(lastAudioBlob.size/1024)} KB). Ready to send.` : "No audio captured.");
       };
 
       mediaRecorder.start();
-      recordingActive = true;
-      updateStatus('Status: Recording...');
-    }
-
-    function stopRecording() {
-      if (mediaRecorder && recordingActive) {
-        try { mediaRecorder.stop(); } catch (err) {}
-      }
-    }
-
-    function computeRmsVolume() {
-      if (!analyser || !analyserData) return 0;
-      analyser.getByteTimeDomainData(analyserData);
-      let sum = 0;
-      for (let i = 0; i < analyserData.length; i++) {
-        const normalized = (analyserData[i] - 128) / 128;
-        sum += normalized * normalized;
-      }
-      return Math.sqrt(sum / analyserData.length);
-    }
-
-    function armListening() {
-      listeningArmed = true;
-      listenBtn.disabled = true;
+      startBtn.disabled = true;
       stopBtn.disabled = false;
-
-      if (alwaysOnToggle.checked) {
-        updateStatus('Status: Waiting for speech...');
-        startVadLoop();
-      } else {
-        // Manual mode = record immediately
-        startRecording();
-      }
+      sendAudioBtn.disabled = true;
+      setStatus("Recording…");
+    } catch (err) {
+      setStatus("Mic error");
+      addLogCard("Microphone error", `<pre>${escapeHtml(String(err))}</pre>`);
     }
+  });
 
-    function disarmListening() {
-      listeningArmed = false;
-      listenBtn.disabled = false;
-      stopBtn.disabled = true;
-
-      stopRecording();
-      stopVadLoop();
-      updateStatus('Status: Idle');
-    }
-
-    function startVadLoop() {
-      if (vadLoopRunning) return;
-      if (!analyser) return;
-
-      vadLoopRunning = true;
-      silenceStartAt = null;
-
-      const loop = () => {
-        if (!vadLoopRunning) return;
-
-        // If not armed, keep loop off
-        if (!listeningArmed || !alwaysOnToggle.checked) {
-          vadLoopRunning = false;
-          return;
-        }
-
-        const threshold = Number(vadThreshold.value);
-        const silenceThresholdMs = Number(silenceMs.value);
-        const volume = computeRmsVolume();
-
-        // ✅ Barge-in: if audio is playing and user starts speaking, interrupt
-        if (audioPlaying && bargeInToggle.checked && volume > threshold) {
-          stopCurrentPlayback(); // stops playback and frees the mic interaction
-        }
-
-        if (volume > threshold) {
-          // Voice detected
-          silenceStartAt = null;
-          if (!recordingActive) {
-            console.log('🎙️ Voice detected. Start recording...');
-            startRecording();
-          }
-        } else {
-          // Silence
-          if (recordingActive) {
-            if (silenceStartAt === null) {
-              silenceStartAt = performance.now();
-            } else if (performance.now() - silenceStartAt > silenceThresholdMs) {
-              console.log('🔇 Silence detected. Stop recording.');
-              silenceStartAt = null;
-              stopRecording();
-            }
-          }
-        }
-
-        requestAnimationFrame(loop);
-      };
-
-      requestAnimationFrame(loop);
-    }
-
-    function stopVadLoop() {
-      vadLoopRunning = false;
-      silenceStartAt = null;
-    }
-
-    // -----------------------------
-    // Playback helpers (same idea as your original)
-    // -----------------------------
-    function playAudioSegment(segment, delayFirstChunk = false) {
-      if (!segment) return;
-      const chunkList = Array.isArray(segment.chunks) && segment.chunks.length
-        ? [...segment.chunks]
-        : (segment.base64 ? [segment.base64] : []);
-      if (!chunkList.length) return;
-
-      audioQueue = audioQueue.then(() => new Promise((resolve) => {
-        audioPlaying = true;
-
-        const playNext = (index) => {
-          if (index >= chunkList.length) {
-            audioPlaying = false;
-            playbackController = null;
-            resolve();
-            return;
-          }
-
-          try {
-            const binary = atob(chunkList[index]);
-            const buffer = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
-
-            const blob = new Blob([buffer], { type: `audio/${segment.format || 'mp3'}` });
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-
-            let cancelled = false;
-            playbackController = {
-              abort() {
-                if (cancelled) return;
-                cancelled = true;
-                try { audio.pause(); } catch (err) {}
-                URL.revokeObjectURL(url);
-                audioPlaying = false;
-                playbackController = null;
-                resolve();
-              }
-            };
-
-            const startPlayback = () =>
-              audio.play().catch((err) => {
-                console.warn('Failed to play audio chunk', err);
-                URL.revokeObjectURL(url);
-                playbackController = null;
-                playNext(index + 1);
-              });
-
-            audio.onended = () => {
-              URL.revokeObjectURL(url);
-              if (cancelled) return;
-              playNext(index + 1);
-            };
-            audio.onerror = () => {
-              URL.revokeObjectURL(url);
-              if (cancelled) return;
-              playNext(index + 1);
-            };
-
-            if (delayFirstChunk && index === 0) setTimeout(startPlayback, 350);
-            else startPlayback();
-          } catch (err) {
-            console.warn('Failed to decode audio chunk', err);
-            playNext(index + 1);
-          }
-        };
-
-        playNext(0);
-      }));
-    }
-
-    function stopCurrentPlayback() {
-      if (playbackController) {
-        const controller = playbackController;
-        playbackController = null;
-        controller.abort();
-      } else {
-        audioPlaying = false;
-      }
-    }
-
-    // -----------------------------
-    // Networking (same backend contract)
-    // -----------------------------
-    async function sendToAgent(message) {
-      const endpoint = normalizeEndpoint(serverUrlInput.value);
-      serverUrlInput.value = endpoint;
-      try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch (err) {}
-
-      const requestBody = {
-        user_id: userId,
-        thread_id: threadId,
-        rooftop_id: rooftopId,
-        message,
-      };
-
-      try {
-        resetTurnMetrics();
-        updateStatus('Status: Contacting voice agent...');
-        console.log('[DEBUG] sending to agent:', message);
-
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
-
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(`HTTP ${response.status}: ${text}`);
-        }
-
-        const contentType = response.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-          updateStatus('Status: Received response...');
-          const payload = await response.json();
-          handleNonStreamingResponse(payload);
-        } else {
-          updateStatus('Status: Streaming response...');
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder('utf-8');
-          let buffer = '';
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            let newlineIndex;
-            while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-              const rawLine = buffer.slice(0, newlineIndex).trim();
-              buffer = buffer.slice(newlineIndex + 1);
-              if (!rawLine) continue;
-
-              let event;
-              try { event = JSON.parse(rawLine); }
-              catch (err) { console.warn('Failed to parse stream chunk', err, rawLine); continue; }
-
-              handleStreamEvent(event);
-            }
-          }
-        }
-
-        updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = `Status: Error - ${err.message}`;
-        appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
-      }
-    }
-
-    async function sendAudioToAgent(blob, mimeType) {
-      const endpoint = normalizeEndpoint(serverUrlInput.value);
-      serverUrlInput.value = endpoint;
-      try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch (err) {}
-
-      const formData = new FormData();
-      formData.append('user_id', userId);
-      formData.append('thread_id', threadId);
-      formData.append('rooftop_id', rooftopId);
-
-      const ext = (mimeType && mimeType.includes('ogg')) ? 'ogg' : 'webm';
-      formData.append('audio', blob, `audio.${ext}`);
-
-      try {
-        resetTurnMetrics();
-        updateStatus('Status: Contacting voice agent...');
-        console.log('[DEBUG] sending audio size:', blob.size, 'mime:', mimeType);
-
-        const response = await fetch(endpoint, { method: 'POST', body: formData });
-
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(`HTTP ${response.status}: ${text}`);
-        }
-
-        const payload = await response.json();
-        if (payload && payload.transcript) appendMessage('user', payload.transcript);
-
-        handleNonStreamingResponse(payload);
-
-        updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = `Status: Error - ${err.message}`;
-        appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
-      }
-    }
-
-    // -----------------------------
-    // Stream + non-stream handlers (kept compatible)
-    // -----------------------------
-    let streamingMessageEl = null;
-    let streamingTextBuffer = '';
-
-    function handleStreamEvent(event) {
-      if (!event || typeof event !== 'object') return;
-
-      switch (event.type) {
-        case 'session':
-          console.log('[DEBUG] Stream session', event.user_id, event.thread_id);
-          break;
-
-        case 'error':
-          appendMessage('agent', 'I hit a snag finishing that response—try again?');
-          updateStatus('Status: Error encountered');
-          break;
-
-        case 'preamble_text':
-          if (event.message) appendMessage('agent', event.message, 'Preamble');
-          if (event.metadata && typeof event.metadata.latency_ms === 'number') {
-            currentTurnMetrics.preambleLatency = event.metadata.latency_ms;
-            applyTurnMetrics();
-          }
-          break;
-
-        case 'preamble_audio':
-          if (event.audio && event.audio.b64) {
-            playAudioSegment({ format: event.audio.format || 'mp3', chunks: [event.audio.b64] });
-          }
-          break;
-
-        case 'final_text':
-          streamingTextBuffer = '';
-          streamingMessageEl = null;
-          if (event.metadata && typeof event.metadata.orchestration_latency_ms === 'number') {
-            currentTurnMetrics.finalLatency = event.metadata.orchestration_latency_ms;
-            applyTurnMetrics();
-          }
-          break;
-
-        case 'final_audio_text': {
-          const text = typeof event.text === 'string' ? event.text.trim() : '';
-          if (!text) break;
-          streamingTextBuffer = text;
-          const labelPrefix = '<strong>Response:</strong> ';
-          const htmlText = `${labelPrefix}${escapeHtml(streamingTextBuffer)}`;
-          if (!streamingMessageEl) {
-            streamingMessageEl = appendMessage('agent', streamingTextBuffer, 'Response');
-          } else {
-            streamingMessageEl.innerHTML = htmlText;
-          }
-          break;
-        }
-
-        case 'final_audio':
-          if (event.audio && event.audio.b64) {
-            const delay = Number(event.sequence || 0) === 1;
-            playAudioSegment(
-              { format: event.audio.format || 'mp3', chunks: [event.audio.b64] },
-              delay
-            );
-          }
-          break;
-
-        case 'audio_chunk': {
-          const b64 = event.chunk;
-          if (typeof b64 === 'string' && b64.trim()) {
-            playAudioSegment({ format: event.format || 'mp3', chunks: [b64] });
-          }
-          break;
-        }
-
-        default:
-          console.log('[DEBUG] Unhandled stream event', event);
-      }
-    }
-
-    function handleNonStreamingResponse(payload) {
-      if (!payload || typeof payload !== 'object') return;
-
-      console.log('[DEBUG] non-stream payload', payload);
-      const response = payload.response || {};
-      const text =
-        response.spokenMessage ||
-        response.suffixMessage ||
-        response.prefixMessage ||
-        response.followUpMessage ||
-        '';
-
-      if (text) appendMessage('agent', text, 'Response');
-      else appendMessage('agent', 'No response text returned.', 'Response');
-
-      const audioSegments = Array.isArray(payload.audio_segments) ? payload.audio_segments : [];
-      audioSegments.forEach((segment, idx) => {
-        if (segment.audio && segment.audio.b64) {
-          playAudioSegment({
-            format: segment.audio.format || 'wav',
-            chunks: [segment.audio.b64],
-          }, idx === 0);
-        }
-      });
-
-      if (!audioSegments.length) console.warn('[AUDIO] no audio_segments returned');
-    }
-
-    // -----------------------------
-    // UI wiring
-    // -----------------------------
+  stopBtn.addEventListener("click", () => {
+    if (!mediaRecorder) return;
     stopBtn.disabled = true;
+    setStatus("Stopping…");
+    mediaRecorder.stop();
+    startBtn.disabled = false;
+  });
 
-    listenBtn.addEventListener('click', async () => {
-      if (!window.MediaRecorder) {
-        listenBtn.disabled = true;
-        stopBtn.disabled = true;
-        updateStatus('Status: MediaRecorder not supported in this browser.');
-        return;
-      }
-      updateStatus('Status: Initializing microphone...');
-      const ready = await ensureMicPipeline();
-      if (!ready) {
-        listenBtn.disabled = false;
-        stopBtn.disabled = true;
-        return;
-      }
-      armListening();
-    });
+  sendAudioBtn.addEventListener("click", async () => {
+    if (!lastAudioBlob) return;
+    sendAudioBtn.disabled = true;
+    await sendAudio(lastAudioBlob);
+  });
 
-    stopBtn.addEventListener('click', () => {
-      disarmListening();
-      stopCurrentPlayback();
-    });
-
-    sendBtn.addEventListener('click', () => {
-      const message = textInput.value.trim();
-      if (!message) return;
-      appendMessage('user', message);
-      sendToAgent(message);
-      textInput.value = '';
-    });
-
-    textInput.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') sendBtn.click();
-    });
-
-    // If user toggles Always On while armed
-    alwaysOnToggle.addEventListener('change', () => {
-      if (!listeningArmed) return;
-      stopRecording();
-      stopVadLoop();
-      if (alwaysOnToggle.checked) {
-        updateStatus('Status: Waiting for speech...');
-        startVadLoop();
-      } else {
-        startRecording();
-      }
-    });
-
-    // -----------------------------
-    // Origin / mic permission hint (and your 405 bug explanation)
-    // -----------------------------
-    (async () => {
-      // ✅ Your earlier bug was this:
-      //   const isSecureOrigin = a || b;
-      //   window.location.hostname === 'py-app....';
-      // That last line does nothing and isSecureOrigin stays false on that hostname.
-      // Correct way is to include it inside the boolean expression.
-
-      const isSecureOrigin =
-        window.location.protocol === 'https:' ||
-        window.location.hostname === 'localhost' ||
-        window.location.hostname === '127.0.0.1' ||
-        window.location.hostname === 'py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com';
-
-      if (!isSecureOrigin) {
-        originHintEl.innerHTML =
-          '<span class="warn">Tip:</span> Use HTTPS or https://localhost to reliably persist microphone permission.';
-      } else {
-        originHintEl.textContent = '';
-      }
-
-      // Also: 405 usually happens when you accidentally hit a relative path like:
-      // "py-app-.../voice/conversation" (no https://) => browser treats it as a path on your current site.
-      // This file auto-normalizes that now.
-
-      if (navigator.permissions && navigator.permissions.query) {
-        try {
-          const status = await navigator.permissions.query({ name: 'microphone' });
-          console.log('[MIC PERMISSION]', status.state);
-          if (status.state === 'denied') {
-            appendMessage(
-              'agent',
-              'Microphone access is blocked. Click the lock icon → Site settings → allow Microphone.',
-              'Notice'
-            );
-          }
-        } catch (err) {
-          console.warn('Permission query failed', err);
-        }
-      }
-    })();
-  </script>
+  sendTypedBtn.addEventListener("click", async () => {
+    await sendTypedMessage();
+  });
+})();
+</script>
 </body>
 </html>
