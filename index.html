@@ -77,7 +77,6 @@
     }
     .message.user { border-left: 3px solid #38bdf8; }
     .message.agent { border-left: 3px solid #a855f7; }
-    .meta { font-size: 0.8rem; opacity: 0.7; margin-top: 6px; }
     #status { font-size: 0.9rem; margin-top: 12px; opacity: 0.85; }
     .small-note { font-size: 0.8rem; opacity: 0.7; }
     .warn { color: #fbbf24; }
@@ -95,7 +94,7 @@
     <div id="sessionInfo" class="small-note"></div>
     <p>
       This page continuously listens (optional) and uses thresholding to detect speech start/end.
-      It sends audio to the backend for transcription using the same request/response format you already have.
+      It sends audio to the backend for transcription.
       It also supports barge-in (interrupt playback when you start talking).
     </p>
 
@@ -139,9 +138,6 @@
   </div>
 
   <script>
-    // -----------------------------
-    // Defaults / helpers
-    // -----------------------------
     const listenBtn = document.getElementById('listenBtn');
     const stopBtn = document.getElementById('stopBtn');
     const sendBtn = document.getElementById('sendBtn');
@@ -160,13 +156,13 @@
     const silenceMs = document.getElementById('silenceMs');
     const silenceMsVal = document.getElementById('silenceMsVal');
 
-    // ✅ REQUIRED default URL (HTTP + :5000)
+    // ✅ DEFAULT URL: EXACTLY WHAT YOU GAVE (http + :5000)
     const DEFAULT_SERVER_URL =
       window.VOICE_AGENT_URL ||
       localStorage.getItem('voiceAgentServerUrl') ||
       'http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation';
 
-    // If user pastes host/path without scheme, auto-prepend http:// (NOT https://)
+    // ✅ Normalize WITHOUT forcing https
     function normalizeEndpoint(raw) {
       const trimmed = (raw || '').trim();
       if (!trimmed) return DEFAULT_SERVER_URL;
@@ -174,7 +170,7 @@
       // Already absolute
       if (/^https?:\/\//i.test(trimmed)) return trimmed;
 
-      // If it looks like a domain/hostname, assume http://
+      // Looks like a hostname? default to http:// (NOT https://)
       if (trimmed.includes('.') && !trimmed.startsWith('/')) {
         return `http://${trimmed}`;
       }
@@ -201,9 +197,6 @@
       silenceMsVal.textContent = String(silenceMs.value);
     });
 
-    // -----------------------------
-    // Session IDs
-    // -----------------------------
     function loadOrInitUserId() {
       const storageKey = 'voiceAgentUserId';
       const stored = localStorage.getItem(storageKey);
@@ -219,7 +212,6 @@
     const rooftopId = '6';
 
     sessionInfoEl.textContent = `Session ID: ${userId}`;
-
     let currentTurnMetrics = { preambleLatency: null, finalLatency: null };
 
     function updateStatus(text) { statusEl.textContent = text; }
@@ -254,9 +246,7 @@
       return item;
     }
 
-    // -----------------------------
     // Mic + VAD + MediaRecorder
-    // -----------------------------
     let micAccessGranted = false;
     let micStream = null;
     let mediaRecorder = null;
@@ -320,6 +310,7 @@
         analyserData = new Uint8Array(analyser.fftSize);
 
         micAccessGranted = true;
+        console.log('[DEBUG] Mic pipeline ready');
         return true;
       } catch (err) {
         console.error('Microphone permission error', err);
@@ -413,7 +404,6 @@
 
       const loop = () => {
         if (!vadLoopRunning) return;
-
         if (!listeningArmed || !alwaysOnToggle.checked) {
           vadLoopRunning = false;
           return;
@@ -423,7 +413,7 @@
         const silenceThresholdMs = Number(silenceMs.value);
         const volume = computeRmsVolume();
 
-        // ✅ Interrupt (barge-in)
+        // ✅ interrupt (barge-in)
         if (audioPlaying && bargeInToggle.checked && volume > threshold) {
           stopCurrentPlayback();
         }
@@ -453,9 +443,7 @@
       silenceStartAt = null;
     }
 
-    // -----------------------------
-    // Playback helpers
-    // -----------------------------
+    // Playback
     function playAudioSegment(segment, delayFirstChunk = false) {
       if (!segment) return;
       const chunkList = Array.isArray(segment.chunks) && segment.chunks.length
@@ -497,8 +485,7 @@
             };
 
             const startPlayback = () =>
-              audio.play().catch((err) => {
-                console.warn('Failed to play audio chunk', err);
+              audio.play().catch(() => {
                 URL.revokeObjectURL(url);
                 playbackController = null;
                 playNext(index + 1);
@@ -518,7 +505,6 @@
             if (delayFirstChunk && index === 0) setTimeout(startPlayback, 350);
             else startPlayback();
           } catch (err) {
-            console.warn('Failed to decode audio chunk', err);
             playNext(index + 1);
           }
         };
@@ -537,20 +523,13 @@
       }
     }
 
-    // -----------------------------
     // Networking
-    // -----------------------------
     async function sendToAgent(message) {
       const endpoint = normalizeEndpoint(serverUrlInput.value);
       serverUrlInput.value = endpoint;
       try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch (err) {}
 
-      const requestBody = {
-        user_id: userId,
-        thread_id: threadId,
-        rooftop_id: rooftopId,
-        message,
-      };
+      const requestBody = { user_id: userId, thread_id: threadId, rooftop_id: rooftopId, message };
 
       try {
         resetTurnMetrics();
@@ -569,10 +548,8 @@
 
         const payload = await response.json();
         handleNonStreamingResponse(payload);
-
         updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
       } catch (err) {
-        console.error(err);
         statusEl.textContent = `Status: Error - ${err.message}`;
         appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
       }
@@ -608,7 +585,6 @@
         handleNonStreamingResponse(payload);
         updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
       } catch (err) {
-        console.error(err);
         statusEl.textContent = `Status: Error - ${err.message}`;
         appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
       }
@@ -631,17 +607,12 @@
       const audioSegments = Array.isArray(payload.audio_segments) ? payload.audio_segments : [];
       audioSegments.forEach((segment, idx) => {
         if (segment.audio && segment.audio.b64) {
-          playAudioSegment({
-            format: segment.audio.format || 'wav',
-            chunks: [segment.audio.b64],
-          }, idx === 0);
+          playAudioSegment({ format: segment.audio.format || 'wav', chunks: [segment.audio.b64] }, idx === 0);
         }
       });
     }
 
-    // -----------------------------
     // UI wiring
-    // -----------------------------
     stopBtn.disabled = true;
 
     listenBtn.addEventListener('click', async () => {
@@ -690,36 +661,11 @@
       }
     });
 
-    // -----------------------------
-    // Origin / mic permission hint
-    // -----------------------------
+    // Hint: HTTPS page -> HTTP backend may be blocked by browser (mixed content).
     (async () => {
-      // NOTE: mic permission persistence is best on https/localhost.
-      // Your backend is http; that's fine for a demo but some browsers may be stricter depending on where you host this file.
-      const isSecureOrigin =
-        window.location.protocol === 'https:' ||
-        window.location.hostname === 'localhost' ||
-        window.location.hostname === '127.0.0.1' ||
-        window.location.hostname === 'py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com';
-
-      if (!isSecureOrigin) {
+      if (window.location.protocol === 'https:') {
         originHintEl.innerHTML =
-          '<span class="warn">Tip:</span> For mic permission reliability, run this page on https://localhost (or https).';
-      } else {
-        originHintEl.textContent = '';
-      }
-
-      if (navigator.permissions && navigator.permissions.query) {
-        try {
-          const status = await navigator.permissions.query({ name: 'microphone' });
-          if (status.state === 'denied') {
-            appendMessage(
-              'agent',
-              'Microphone access is blocked. Click the lock icon → Site settings → allow Microphone.',
-              'Notice'
-            );
-          }
-        } catch (err) {}
+          '<span class="warn">Note:</span> This page is HTTPS. Browsers may block HTTP calls to the voice service. Use http://localhost or open this file locally (file://) for the demo.';
       }
     })();
   </script>
