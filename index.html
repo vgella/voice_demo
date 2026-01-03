@@ -1,348 +1,482 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Voice Agent Browser Demo</title>
+  <meta charset="UTF-8" />
+  <title>Voice Agent Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
-    input[type="text"] { width: min(980px, 100%); padding: 10px; font-size: 14px; }
-    textarea { width: min(980px, 100%); height: 110px; padding: 10px; font-size: 14px; }
-    button { padding: 10px 14px; font-size: 14px; cursor: pointer; }
-    .status { padding: 8px 10px; border-radius: 8px; background: #f2f2f2; display: inline-block; }
-    .warn { background: #fff3cd; border: 1px solid #ffeeba; padding: 10px; border-radius: 8px; }
-    pre { background: #0b1020; color: #d7e2ff; padding: 12px; border-radius: 10px; overflow: auto; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; width: min(980px, 100%); }
-    .muted { color: #666; font-size: 13px; }
-    label { font-weight: 600; }
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    h1 { margin-top: 0; font-size: 1.6rem; }
+    .panel {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 800px;
+      margin: 0 auto 20px auto;
+      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
+    }
+    label { display: block; margin-bottom: 4px; font-weight: 500; }
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.6);
+      color: inherit;
+      font-size: 1rem;
+      margin-bottom: 12px;
+    }
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 24px;
+      padding: 10px 18px;
+      margin-right: 10px;
+      margin-bottom: 10px;
+      font-size: 0.95rem;
+      transition: transform 0.15s ease, opacity 0.2s ease;
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      color: #0f172a;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: transparent;
+      color: #e2e8f0;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button:not(:disabled):hover { transform: translateY(-1px); }
+    #log { max-height: 380px; overflow-y: auto; padding-right: 8px; }
+    .message {
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      line-height: 1.4;
+      background: rgba(30, 41, 59, 0.7);
+    }
+    .message.user { border-left: 3px solid #38bdf8; }
+    .message.agent { border-left: 3px solid #a855f7; }
+    #status { font-size: 0.9rem; margin-top: 12px; opacity: 0.85; }
+    .small-note { font-size: 0.8rem; opacity: 0.75; }
+    @media (max-width: 600px) {
+      body { padding: 16px; }
+      .panel { padding: 16px; }
+    }
   </style>
 </head>
 <body>
-  <h2>Voice Agent Browser Demo</h2>
+  <div class="panel">
+    <h1>Voice Agent Browser Demo</h1>
+    <div id="sessionInfo" class="small-note"></div>
+    <p>
+      Use your microphone to send a message to the running voice agent.
+      This page records audio in the browser and sends it to the server for transcription.
+    </p>
 
-  <div class="card">
-    <div class="row">
-      <label for="voiceUrl">Voice agent URL</label>
+    <label for="serverUrl">Voice agent URL</label>
+    <input
+      id="serverUrl"
+      type="text"
+      autocomplete="off"
+      data-default-url="http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation"
+    />
+
+    <div>
+      <button id="listenBtn">🎤 Start Listening</button>
+      <button id="stopBtn" class="secondary">Stop Listening</button>
+      <button id="sendBtn" class="secondary">Send Typed Message</button>
     </div>
-    <div class="row">
-      <input id="voiceUrl" type="text" />
-    </div>
-    <div class="row muted">
-      Endpoint must be <code>POST</code> and audio uses <code>multipart/form-data</code> field <code>audio</code>.
-    </div>
+
+    <input id="textInput" type="text" placeholder="...or type your question here" />
+    <div id="status">Status: Idle</div>
+    <div class="small-note" id="hint"></div>
   </div>
 
-  <div id="secureWarn" class="warn" style="display:none; margin-top:12px;">
-    <b>Mic permission warning:</b> Browsers only allow microphone recording on a <b>secure context</b>
-    (HTTPS) or <b>http://localhost</b>. If you opened this as <code>file://</code> or from plain HTTP,
-    the mic may be blocked.<br/>
-    <span class="muted">Quick fix: run <code>python -m http.server 8000</code> in this folder and open
-    <code>http://localhost:8000/index.html</code>.</span>
-  </div>
-
-  <div class="card" style="margin-top:12px;">
-    <div class="row">
-      <button id="startBtn">🎤 Start Listening</button>
-      <button id="stopBtn" disabled>⏹ Stop Listening</button>
-      <button id="sendAudioBtn" disabled>📤 Send Audio</button>
-      <span class="status" id="status">Status: Idle</span>
-    </div>
-
-    <div class="row">
-      <label for="typedMsg">...or type your question here</label>
-    </div>
-    <div class="row">
-      <textarea id="typedMsg" placeholder="Type a message and click Send Typed Message"></textarea>
-    </div>
-    <div class="row">
-      <button id="sendTypedBtn">Send Typed Message</button>
-    </div>
-
-    <div class="row muted">
-      Optional IDs (recommended stable per session): user_id / thread_id / rooftop_id
-    </div>
-    <div class="row">
-      <input id="userId" type="text" placeholder="user_id (optional)" />
-      <input id="threadId" type="text" placeholder="thread_id (optional)" />
-      <input id="rooftopId" type="text" placeholder="rooftop_id (optional, default 6)" />
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:12px;">
-    <h3 style="margin-top:0;">Conversation</h3>
+  <div class="panel">
+    <h2>Conversation</h2>
     <div id="log"></div>
-  </div>
-
-  <div class="card" style="margin-top:12px;">
-    <h3 style="margin-top:0;">Raw response (debug)</h3>
-    <pre id="raw">(none yet)</pre>
+    <div id="latency" class="small-note"></div>
   </div>
 
 <script>
-(() => {
-  // MUST be set to the :5000 endpoint you provided
-  const DEFAULT_VOICE_URL = "http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation";
+  const listenBtn = document.getElementById('listenBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const sendBtn = document.getElementById('sendBtn');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+  const textInput = document.getElementById('textInput');
+  const serverUrlInput = document.getElementById('serverUrl');
+  const latencyEl = document.getElementById('latency');
+  const sessionInfoEl = document.getElementById('sessionInfo');
+  const hintEl = document.getElementById('hint');
 
-  const voiceUrlEl = document.getElementById("voiceUrl");
-  const startBtn = document.getElementById("startBtn");
-  const stopBtn = document.getElementById("stopBtn");
-  const sendAudioBtn = document.getElementById("sendAudioBtn");
-  const sendTypedBtn = document.getElementById("sendTypedBtn");
-  const statusEl = document.getElementById("status");
-  const rawEl = document.getElementById("raw");
-  const logEl = document.getElementById("log");
+  // REQUIRED DEFAULT (your exact URL)
+  const HARD_DEFAULT =
+    "http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation";
 
-  const typedMsgEl = document.getElementById("typedMsg");
-  const userIdEl = document.getElementById("userId");
-  const threadIdEl = document.getElementById("threadId");
-  const rooftopIdEl = document.getElementById("rooftopId");
+  const DEFAULT_SERVER_URL =
+    window.VOICE_AGENT_URL ||
+    localStorage.getItem('voiceAgentServerUrl') ||
+    serverUrlInput.dataset.defaultUrl ||
+    HARD_DEFAULT;
 
-  voiceUrlEl.value = DEFAULT_VOICE_URL;
+  serverUrlInput.value = DEFAULT_SERVER_URL;
 
-  // Secure context check for mic
-  const isSecureOrigin =
-    window.location.protocol === "https:" ||
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1";
-  if (!isSecureOrigin) {
-    document.getElementById("secureWarn").style.display = "block";
+  serverUrlInput.addEventListener('change', () => {
+    try { localStorage.setItem('voiceAgentServerUrl', serverUrlInput.value.trim()); }
+    catch (err) { console.warn('Failed to persist server URL', err); }
+  });
+
+  function loadOrInitUserId() {
+    const storageKey = 'voiceAgentUserId';
+    const stored = localStorage.getItem(storageKey);
+    if (stored) return stored;
+    const token = crypto.randomUUID().split('-')[0];
+    const generated = `VOICETEST-${token}`;
+    localStorage.setItem(storageKey, generated);
+    return generated;
   }
 
+  const userId = loadOrInitUserId();
+  const threadId = crypto.randomUUID();
+  sessionInfoEl.textContent = `Session ID: ${userId}`;
+
+  function updateStatus(text) { statusEl.textContent = text; }
+
+  let micAccessGranted = false;
+  let micStream = null;
+  let micStreamReadyPromise = null;
   let mediaRecorder = null;
-  let audioChunks = [];
-  let lastAudioBlob = null;
+  let recordingActive = false;
+  let recordedChunks = [];
+  let lastRecorderMime = 'audio/webm';
 
-  function setStatus(msg) {
-    statusEl.textContent = "Status: " + msg;
+  // Playback queue (prevents overlapping audio)
+  let audioQueue = Promise.resolve();
+
+  function appendMessage(role, text, label = null) {
+    const item = document.createElement('div');
+    item.className = `message ${role}`;
+    const title = label ? `<strong>${label}:</strong> ` : '';
+    item.innerHTML = `${title}${escapeHtml(text)}`;
+    logEl.appendChild(item);
+    logEl.scrollTop = logEl.scrollHeight;
+    return item;
   }
 
-  function escapeHtml(s) {
-    return (s || "").replace(/[&<>"']/g, c => ({
-      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-    }[c]));
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text ?? '';
+    return div.innerHTML;
   }
 
-  function addLogCard(title, bodyHtml) {
-    const div = document.createElement("div");
-    div.style.borderTop = "1px solid #eee";
-    div.style.padding = "10px 0";
-    div.innerHTML = `<div><b>${escapeHtml(title)}</b></div><div style="margin-top:6px;">${bodyHtml}</div>`;
-    logEl.prepend(div);
+  function resetLatency() { latencyEl.textContent = ''; }
+
+  async function ensureMicPipeline() {
+    if (micAccessGranted) return true;
+    if (micStreamReadyPromise) {
+      try { await micStreamReadyPromise; return micAccessGranted; } catch { return false; }
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      updateStatus('Status: Microphone not supported in this browser.');
+      return false;
+    }
+
+    micStreamReadyPromise = (async () => {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        micAccessGranted = true;
+      } catch (err) {
+        micAccessGranted = false;
+        micStream = null;
+        console.error('Microphone permission error', err);
+        updateStatus('Status: Microphone permission denied');
+        throw err;
+      }
+    })();
+
+    try { await micStreamReadyPromise; return micAccessGranted; }
+    catch { micStreamReadyPromise = null; return false; }
   }
 
-  async function playAudioSegments(segments) {
-    if (!Array.isArray(segments) || segments.length === 0) return;
-
-    // sort by sequence, then play one-by-one
-    const sorted = [...segments].sort((a,b) => (a.sequence ?? 0) - (b.sequence ?? 0));
-
-    for (const seg of sorted) {
-      const b64 = seg?.audio?.b64;
-      if (!b64) continue;
-
-      const wavBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-      const blob = new Blob([wavBytes], { type: "audio/wav" });
-      const url = URL.createObjectURL(blob);
-
-      await new Promise((resolve) => {
-        const audio = new Audio(url);
-        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.play().catch(() => { URL.revokeObjectURL(url); resolve(); });
-      });
+  function pickRecorderMimeType() {
+    if (!window.MediaRecorder) return '';
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/ogg;codecs=opus',
+      'audio/webm',
+      'audio/ogg',
+    ];
+    for (const c of candidates) {
+      if (MediaRecorder.isTypeSupported(c)) return c;
     }
+    return '';
   }
 
-  function buildOptionalFields(formOrObj) {
-    const user_id = userIdEl.value.trim();
-    const thread_id = threadIdEl.value.trim();
-    const rooftop_id = rooftopIdEl.value.trim();
+  function startRecording() {
+    if (!micStream || recordingActive) return;
 
-    // If it's FormData
-    if (formOrObj instanceof FormData) {
-      if (user_id) formOrObj.append("user_id", user_id);
-      if (thread_id) formOrObj.append("thread_id", thread_id);
-      if (rooftop_id) formOrObj.append("rooftop_id", rooftop_id);
-    } else {
-      if (user_id) formOrObj.user_id = user_id;
-      if (thread_id) formOrObj.thread_id = thread_id;
-      if (rooftop_id) formOrObj.rooftop_id = rooftop_id;
-    }
-  }
-
-  async function sendAudio(blob) {
-    const url = voiceUrlEl.value.trim();
-    if (!url) return;
-
-    setStatus("Uploading audio…");
-
-    const form = new FormData();
-    // Backend expects field name "audio"
-    form.append("audio", blob, "recording.webm");
-    buildOptionalFields(form);
-
-    const res = await fetch(url, { method: "POST", body: form });
-    const text = await res.text();
-
-    if (!res.ok) {
-      setStatus(`Error - HTTP ${res.status}`);
-      addLogCard("Server error", `<pre>${escapeHtml(text)}</pre>`);
-      rawEl.textContent = text;
-      return;
-    }
-
-    let data;
-    try { data = JSON.parse(text); }
-    catch {
-      setStatus("Error - Non-JSON response");
-      addLogCard("Non-JSON response", `<pre>${escapeHtml(text)}</pre>`);
-      rawEl.textContent = text;
-      return;
-    }
-
-    rawEl.textContent = JSON.stringify(data, null, 2);
-
-    // Render transcript + combined spoken response
-    const transcript = data.transcript ? `<div><b>Transcript:</b> ${escapeHtml(data.transcript)}</div>` : "";
-    const r = data.response || {};
-    const spoken = [r.prefixMessage, r.suffixMessage, r.followUpMessage].filter(Boolean).join(" ").trim();
-    const vins = Array.isArray(r.vins) ? r.vins : [];
-    const vinsHtml = vins.length ? `<div class="muted">VINs: ${escapeHtml(vins.join(", "))}</div>` : "";
-
-    addLogCard(
-      "Audio → Response",
-      `${transcript}<div style="margin-top:6px;">${escapeHtml(spoken || "(empty response)")}</div>${vinsHtml}`
-    );
-
-    // Play returned TTS audio segments if present
-    if (Array.isArray(data.audio_segments) && data.audio_segments.length) {
-      setStatus("Playing response audio…");
-      await playAudioSegments(data.audio_segments);
-      setStatus("Done");
-    } else {
-      setStatus("Done (no audio_segments returned)");
-    }
-  }
-
-  async function sendTypedMessage() {
-    const url = voiceUrlEl.value.trim();
-    const message = typedMsgEl.value.trim();
-    if (!url) return;
-    if (!message) {
-      addLogCard("Client", "<i>Please type a message first.</i>");
-      return;
-    }
-
-    setStatus("Sending typed message…");
-
-    const payload = { message };
-    buildOptionalFields(payload);
-    if (!payload.rooftop_id) payload.rooftop_id = "6";
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const text = await res.text();
-
-    if (!res.ok) {
-      setStatus(`Error - HTTP ${res.status}`);
-      addLogCard("Server error", `<pre>${escapeHtml(text)}</pre>`);
-      rawEl.textContent = text;
-      return;
-    }
-
-    let data;
-    try { data = JSON.parse(text); }
-    catch {
-      setStatus("Error - Non-JSON response");
-      addLogCard("Non-JSON response", `<pre>${escapeHtml(text)}</pre>`);
-      rawEl.textContent = text;
-      return;
-    }
-
-    rawEl.textContent = JSON.stringify(data, null, 2);
-
-    const r = data.response || {};
-    const spoken = [r.prefixMessage, r.suffixMessage, r.followUpMessage].filter(Boolean).join(" ").trim();
-    const vins = Array.isArray(r.vins) ? r.vins : [];
-
-    addLogCard(
-      "Text → Response",
-      `<div><b>You:</b> ${escapeHtml(message)}</div>
-       <div style="margin-top:6px;"><b>Agent:</b> ${escapeHtml(spoken || "(empty response)")}</div>
-       ${vins.length ? `<div class="muted">VINs: ${escapeHtml(vins.join(", "))}</div>` : ""}`
-    );
-
-    // Some servers may still return audio_segments even for text input. If present, play them.
-    if (Array.isArray(data.audio_segments) && data.audio_segments.length) {
-      setStatus("Playing response audio…");
-      await playAudioSegments(data.audio_segments);
-      setStatus("Done");
-    } else {
-      setStatus("Done");
-    }
-  }
-
-  startBtn.addEventListener("click", async () => {
-    audioChunks = [];
-    lastAudioBlob = null;
+    const mimeType = pickRecorderMimeType();
+    recordedChunks = [];
+    lastRecorderMime = mimeType || 'audio/webm';
 
     try {
-      setStatus("Requesting microphone permission…");
+      mediaRecorder = mimeType ? new MediaRecorder(micStream, { mimeType }) : new MediaRecorder(micStream);
+    } catch (err) {
+      console.error('Failed to start recorder', err);
+      updateStatus('Status: Recorder failed to start');
+      return;
+    }
 
-      // Prefer audio/webm. If unsupported, MediaRecorder may still work with browser defaults.
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+    };
 
-      const options = {};
-      if (MediaRecorder.isTypeSupported("audio/webm")) {
-        options.mimeType = "audio/webm";
+    mediaRecorder.onstop = async () => {
+      recordingActive = false;
+      const blob = new Blob(recordedChunks, { type: lastRecorderMime });
+      if (blob.size === 0) {
+        updateStatus('Status: No audio captured');
+        listenBtn.disabled = false;
+        stopBtn.disabled = true;
+        return;
+      }
+      await sendAudioToAgent(blob, lastRecorderMime);
+    };
+
+    mediaRecorder.start();
+    recordingActive = true;
+    updateStatus('Status: Recording...');
+    listenBtn.disabled = true;
+    stopBtn.disabled = false;
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && recordingActive) {
+      try { mediaRecorder.stop(); } catch (err) { console.warn('mediaRecorder.stop error', err); }
+    }
+  }
+
+  async function startListening() {
+    if (!window.MediaRecorder) {
+      listenBtn.disabled = true;
+      stopBtn.disabled = true;
+      updateStatus('Status: MediaRecorder not supported in this browser.');
+      return;
+    }
+    updateStatus('Status: Initializing microphone...');
+    const ready = await ensureMicPipeline();
+    if (!ready) {
+      listenBtn.disabled = false;
+      stopBtn.disabled = true;
+      return;
+    }
+    startRecording();
+  }
+
+  function stopListening() {
+    stopRecording();
+    updateStatus('Status: Idle');
+    listenBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+
+  stopBtn.disabled = true;
+
+  listenBtn.addEventListener('click', () => startListening());
+  stopBtn.addEventListener('click', () => stopListening());
+
+  sendBtn.addEventListener('click', () => {
+    const message = textInput.value.trim();
+    if (!message) return;
+    appendMessage('user', message);
+    sendToAgent(message);
+    textInput.value = '';
+  });
+
+  textInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') sendBtn.click();
+  });
+
+  function getEndpoint() {
+    const endpoint = (serverUrlInput.value || '').trim() || HARD_DEFAULT;
+    serverUrlInput.value = endpoint;
+    try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch {}
+    return endpoint;
+  }
+
+  async function sendToAgent(message) {
+    const endpoint = getEndpoint();
+    const requestBody = { user_id: userId, thread_id: threadId, rooftop_id: '6', message };
+
+    try {
+      resetLatency();
+      updateStatus('Status: Contacting voice agent...');
+      const t0 = performance.now();
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text}`);
       }
 
-      mediaRecorder = new MediaRecorder(stream, options);
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) audioChunks.push(e.data);
-      };
-      mediaRecorder.onstop = () => {
-        // Stop tracks so mic isn’t held open
-        stream.getTracks().forEach(t => t.stop());
-        lastAudioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-        sendAudioBtn.disabled = !lastAudioBlob;
-        setStatus(lastAudioBlob ? `Recorded (${Math.round(lastAudioBlob.size/1024)} KB). Ready to send.` : "No audio captured.");
-      };
-
-      mediaRecorder.start();
-      startBtn.disabled = true;
-      stopBtn.disabled = false;
-      sendAudioBtn.disabled = true;
-      setStatus("Recording…");
+      const payload = await response.json();
+      latencyEl.textContent = `Round-trip: ${Math.round(performance.now() - t0)} ms`;
+      handleNonStreamingResponse(payload);
+      updateStatus('Status: Ready');
     } catch (err) {
-      setStatus("Mic error");
-      addLogCard("Microphone error", `<pre>${escapeHtml(String(err))}</pre>`);
+      console.error(err);
+      updateStatus(`Status: Error - ${err.message}`);
+      appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
     }
-  });
+  }
 
-  stopBtn.addEventListener("click", () => {
-    if (!mediaRecorder) return;
-    stopBtn.disabled = true;
-    setStatus("Stopping…");
-    mediaRecorder.stop();
-    startBtn.disabled = false;
-  });
+  async function sendAudioToAgent(blob, mimeType) {
+    const endpoint = getEndpoint();
 
-  sendAudioBtn.addEventListener("click", async () => {
-    if (!lastAudioBlob) return;
-    sendAudioBtn.disabled = true;
-    await sendAudio(lastAudioBlob);
-  });
+    const formData = new FormData();
+    formData.append('user_id', userId);
+    formData.append('thread_id', threadId);
+    formData.append('rooftop_id', '6');
+    const ext = (mimeType && mimeType.includes('ogg')) ? 'ogg' : 'webm';
+    formData.append('audio', blob, `audio.${ext}`);
 
-  sendTypedBtn.addEventListener("click", async () => {
-    await sendTypedMessage();
-  });
-})();
+    try {
+      resetLatency();
+      updateStatus('Status: Sending audio...');
+      const t0 = performance.now();
+
+      const response = await fetch(endpoint, { method: 'POST', body: formData });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text}`);
+      }
+
+      const payload = await response.json();
+      latencyEl.textContent = `Round-trip: ${Math.round(performance.now() - t0)} ms`;
+
+      if (payload && payload.transcript) appendMessage('user', payload.transcript);
+      handleNonStreamingResponse(payload);
+
+      updateStatus('Status: Ready');
+    } catch (err) {
+      console.error(err);
+      updateStatus(`Status: Error - ${err.message}`);
+      appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
+    } finally {
+      // re-enable buttons after a voice turn
+      listenBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
+  }
+
+  function playWavBase64(b64, formatHint = 'wav') {
+    if (!b64 || typeof b64 !== 'string') return;
+
+    audioQueue = audioQueue.then(() => new Promise((resolve) => {
+      try {
+        const binary = atob(b64);
+        const buffer = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
+
+        const blob = new Blob([buffer], { type: `audio/${formatHint}` });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+
+        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+
+        // Autoplay sometimes fails unless user clicked a button.
+        audio.play().catch((err) => {
+          console.warn('Audio play failed (autoplay policy?)', err);
+          URL.revokeObjectURL(url);
+          resolve();
+        });
+      } catch (e) {
+        console.warn('Failed decoding base64 audio', e);
+        resolve();
+      }
+    }));
+  }
+
+  function handleNonStreamingResponse(payload) {
+    if (!payload || typeof payload !== 'object') return;
+
+    const response = payload.response || {};
+    const spoken =
+      [response.prefixMessage, response.suffixMessage, response.followUpMessage]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+
+    if (spoken) appendMessage('agent', spoken, 'Response');
+    else appendMessage('agent', 'No response text returned.', 'Response');
+
+    const audioSegments = Array.isArray(payload.audio_segments) ? payload.audio_segments : [];
+    if (!audioSegments.length) {
+      console.warn('[AUDIO] no audio_segments returned');
+      return;
+    }
+
+    // Ensure sequence order
+    audioSegments
+      .slice()
+      .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+      .forEach((seg) => {
+        if (seg?.audio?.b64) playWavBase64(seg.audio.b64, seg.audio.format || 'wav');
+      });
+  }
+
+  // Secure context hint for mic:
+  (async () => {
+    const isLocalhost =
+      location.hostname === 'localhost' ||
+      location.hostname === '127.0.0.1' ||
+      location.hostname === '[::1]';
+    const isSecureContextOk = window.isSecureContext || isLocalhost;
+
+    hintEl.textContent = isSecureContextOk
+      ? 'Tip: If you don’t hear audio, check browser autoplay + volume, and confirm audio_segments are returned.'
+      : 'Mic tip: Open this page via http://localhost (recommended) or HTTPS. Opening from file:// may block microphone access.';
+
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const st = await navigator.permissions.query({ name: 'microphone' });
+        if (st.state === 'denied') {
+          appendMessage(
+            'agent',
+            'Microphone access is blocked. Click the lock icon → Site settings → allow Microphone.',
+            'Notice'
+          );
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+  })();
 </script>
 </body>
 </html>
