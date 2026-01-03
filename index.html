@@ -120,10 +120,10 @@
     <div id="sessionInfo" class="small-note"></div>
     <p>
         Use your Windows microphone to send a message to the running voice agent.
-        This page uses the browser's SpeechRecognition API—Chrome or Edge works best.
+        This page records audio in the browser and sends it to the server for transcription.
     </p>
     <label for="serverUrl">Voice agent URL</label>
-    <input id="serverUrl" type="text" data-default-url="http://localhost:5000/voice/conversation" autocomplete="off">
+    <input id="serverUrl" type="text" data-default-url="/voice/conversation" autocomplete="off">
     <div>
         <button id="listenBtn">🎤 Start Listening</button>
         <button id="stopBtn" class="secondary">Stop Listening</button>
@@ -163,33 +163,24 @@
         }
     });
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let recognition = null;
-    let recognitionActive = false;
     let listeningArmed = false;
     let micAccessGranted = false;
+    let mediaRecorder = null;
+    let recordingActive = false;
+    let recordedChunks = [];
+    let lastRecorderMime = 'audio/webm';
 
     let micStream = null;
     let micStreamReadyPromise = null;
-    let audioContext = null;
-    let analyser = null;
-    let dataArray = null;
-    let volumeMonitorStarted = false;
-    let speaking = false;
-    let silenceStart = null;
-    let lastTranscript = '';
     let streamingMessageEl = null;
     let streamingTextBuffer = '';
     let playbackController = null;
     let playbackPending = false;
     let shouldRearmAfterPlayback = false;
-    let lastVadStartAt = 0;
-    let lastVadStopAt = 0;
     let lastPlaybackEndedAt = 0;
+    let streamedAudioChunks = [];
+    let streamedAudioFormat = 'mp3';
 
-    const START_THRESHOLD = 0.035;
-    const STOP_THRESHOLD = 0.018;
-    const SILENCE_HOLD_MS = 600;
     const PLAYBACK_COOLDOWN_MS = 350;
 
     function loadOrInitUserId() {
@@ -264,24 +255,8 @@
                     }
                 });
 
-                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-                audioContext = new AudioContextClass();
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 1024;
-                dataArray = new Float32Array(analyser.fftSize);
-
-                const source = audioContext.createMediaStreamSource(micStream);
-                source.connect(analyser);
-                await audioContext.resume().catch(() => {});
-
                 micAccessGranted = true;
                 console.log('[DEBUG] Microphone pipeline initialized');
-
-                ensureRecognition();
-                if (!volumeMonitorStarted) {
-                    volumeMonitorStarted = true;
-                    requestAnimationFrame(monitorVolume);
-                }
             } catch (err) {
                 micAccessGranted = false;
                 micStream = null;
@@ -309,161 +284,87 @@
 
     function disarmListening() {
         listeningArmed = false;
-        stopRecognition();
+        stopRecording();
         updateStatus('Status: Idle');
         listenBtn.disabled = false;
         stopBtn.disabled = true;
     }
 
-    function startRecognitionIfNeeded() {
-        if (!listeningArmed) return;
-        if (!recognition || recognitionActive) return;
-        try {
-            recognition.start();
-        } catch (err) {
-            if (err.name !== 'InvalidStateError') {
-                console.warn('recognition.start error', err);
+    function pickRecorderMimeType() {
+        if (!window.MediaRecorder) {
+            return '';
+        }
+        const candidates = [
+            'audio/webm;codecs=opus',
+            'audio/ogg;codecs=opus',
+            'audio/webm',
+            'audio/ogg',
+        ];
+        for (const candidate of candidates) {
+            if (MediaRecorder.isTypeSupported(candidate)) {
+                return candidate;
             }
         }
+        return '';
     }
 
-    function stopRecognition() {
-        if (recognition && recognitionActive) {
-            try {
-                recognition.stop();
-            } catch (err) {
-                if (err.name !== 'InvalidStateError') {
-                    console.warn('recognition.stop error', err);
-                }
-            }
-        }
-    }
-
-    function ensureRecognition() {
-        if (recognition || !SpeechRecognition) {
+    function startRecording() {
+        if (!micStream || recordingActive) {
             return;
         }
-        recognition = new SpeechRecognition();
-        recognition.lang = 'en-US';
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
-        recognition.continuous = true;
+        const mimeType = pickRecorderMimeType();
+        recordedChunks = [];
+        lastRecorderMime = mimeType || 'audio/webm';
+        try {
+            mediaRecorder = mimeType
+                ? new MediaRecorder(micStream, { mimeType })
+                : new MediaRecorder(micStream);
+        } catch (err) {
+            console.error('Failed to start recorder', err);
+            updateStatus('Status: Recorder failed to start');
+            return;
+        }
 
-        recognition.onstart = () => {
-            recognitionActive = true;
-            lastTranscript = '';
-            console.log('[DEBUG] recognition started');
-            updateStatus('Status: Transcribing...');
-            listenBtn.disabled = true;
-            stopBtn.disabled = false;
-        };
-
-        recognition.onend = () => {
-            recognitionActive = false;
-            console.log('[DEBUG] recognition ended');
-            if (!listeningArmed) {
-                if (playbackController || playbackPending) {
-                    updateStatus('Status: Playing response...');
-                    listenBtn.disabled = true;
-                    stopBtn.disabled = true;
-                } else {
-                    updateStatus('Status: Idle');
-                    listenBtn.disabled = false;
-                    stopBtn.disabled = true;
-                }
-            } else {
-                updateStatus('Status: Waiting for speech...');
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+                recordedChunks.push(event.data);
             }
         };
 
-        recognition.onresult = (event) => {
-            if (!listeningArmed) {
+        mediaRecorder.onstop = async () => {
+            recordingActive = false;
+            const blob = new Blob(recordedChunks, { type: lastRecorderMime });
+            if (blob.size === 0) {
+                updateStatus('Status: No audio captured');
+                listenBtn.disabled = false;
+                stopBtn.disabled = true;
                 return;
             }
-            for (let i = event.resultIndex; i < event.results.length; i += 1) {
-                const result = event.results[i];
-                if (result.isFinal) {
-                    const transcript = (result[0] && result[0].transcript || '').trim();
-                    if (transcript && transcript !== lastTranscript) {
-                        lastTranscript = transcript;
-                        console.log('[DEBUG] Speech final:', transcript);
-                        appendMessage('user', transcript);
-                        sendToAgent(transcript);
-                    }
-                }
-            }
+            await sendAudioToAgent(blob, lastRecorderMime);
         };
 
-        recognition.onerror = (event) => {
-            console.warn('Speech recognition error', event);
-            recognitionActive = false;
-            if (!listeningArmed) {
-                updateStatus('Status: Idle');
-            } else {
-                updateStatus('Status: Waiting for speech...');
-            }
-        };
+        mediaRecorder.start();
+        recordingActive = true;
+        updateStatus('Status: Recording...');
+        listenBtn.disabled = true;
+        stopBtn.disabled = false;
     }
 
-    function monitorVolume() {
-        if (!analyser || !dataArray) {
-            requestAnimationFrame(monitorVolume);
-            return;
-        }
-
-        analyser.getFloatTimeDomainData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i += 1) {
-            const sample = dataArray[i];
-            sum += sample * sample;
-        }
-        const rms = Math.sqrt(sum / dataArray.length) || 0;
-        const now = performance.now();
-        const playbackActive = !!playbackController;
-        const withinCooldown = (now - lastPlaybackEndedAt) < PLAYBACK_COOLDOWN_MS;
-
-        if (playbackActive || withinCooldown) {
-            speaking = false;
-            silenceStart = null;
-            requestAnimationFrame(monitorVolume);
-            return;
-        }
-
-        if (!listeningArmed) {
-            speaking = false;
-            silenceStart = null;
-            requestAnimationFrame(monitorVolume);
-            return;
-        }
-
-        if (!speaking && rms > START_THRESHOLD) {
-            speaking = true;
-            lastVadStartAt = now;
-            startRecognitionIfNeeded();
-        } else if (speaking) {
-            if (rms < STOP_THRESHOLD) {
-                if (silenceStart === null) {
-                    silenceStart = now;
-                } else if ((now - silenceStart) >= SILENCE_HOLD_MS) {
-                    speaking = false;
-                    lastVadStopAt = now;
-                    silenceStart = null;
-                    stopRecognition();
-                    updateStatus('Status: Waiting for speech...');
-                }
-            } else {
-                silenceStart = null;
+    function stopRecording() {
+        if (mediaRecorder && recordingActive) {
+            try {
+                mediaRecorder.stop();
+            } catch (err) {
+                console.warn('mediaRecorder.stop error', err);
             }
         }
-
-        requestAnimationFrame(monitorVolume);
     }
 
     async function startListening() {
-        if (!SpeechRecognition) {
+        if (!window.MediaRecorder) {
             listenBtn.disabled = true;
             stopBtn.disabled = true;
-            updateStatus('Status: Speech recognition not supported in this browser.');
+            updateStatus('Status: MediaRecorder not supported in this browser.');
             return;
         }
         updateStatus('Status: Initializing microphone...');
@@ -473,16 +374,15 @@
             stopBtn.disabled = true;
             return;
         }
-        ensureRecognition();
         armListening();
+        startRecording();
     }
 
     function stopListening() {
         disarmListening();
-        speaking = false;
-        silenceStart = null;
         playbackPending = false;
         shouldRearmAfterPlayback = false;
+        stopRecording();
     }
 
     function pauseListeningForPlayback() {
@@ -492,7 +392,7 @@
         shouldRearmAfterPlayback = listeningArmed;
         playbackPending = true;
         listeningArmed = false;
-        stopRecognition();
+        stopRecording();
         updateStatus('Status: Playing response...');
         listenBtn.disabled = true;
         stopBtn.disabled = true;
@@ -505,6 +405,7 @@
             setTimeout(() => {
                 shouldRearmAfterPlayback = false;
                 armListening();
+                startRecording();
             }, PLAYBACK_COOLDOWN_MS);
         } else {
             updateStatus('Status: Idle');
@@ -513,13 +414,7 @@
         }
     }
 
-    if (!SpeechRecognition) {
-        listenBtn.disabled = true;
-        stopBtn.disabled = true;
-        updateStatus('Status: Speech recognition not supported in this browser.');
-    } else {
-        stopBtn.disabled = true;
-    }
+    stopBtn.disabled = true;
 
     listenBtn.addEventListener('click', () => {
         startListening();
@@ -576,34 +471,86 @@
                 throw new Error(`HTTP ${response.status}: ${text}`);
             }
 
-            updateStatus('Status: Streaming response...');
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                updateStatus('Status: Received response...');
+                const payload = await response.json();
+                handleNonStreamingResponse(payload);
+            } else {
+                updateStatus('Status: Streaming response...');
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
 
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
 
-                buffer += decoder.decode(value, { stream: true });
+                    buffer += decoder.decode(value, { stream: true });
 
-                let newlineIndex;
-                while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-                    const rawLine = buffer.slice(0, newlineIndex).trim();
-                    buffer = buffer.slice(newlineIndex + 1);
-                    if (!rawLine) {
-                        continue;
+                    let newlineIndex;
+                    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+                        const rawLine = buffer.slice(0, newlineIndex).trim();
+                        buffer = buffer.slice(newlineIndex + 1);
+                        if (!rawLine) {
+                            continue;
+                        }
+                        let event;
+                        try {
+                            event = JSON.parse(rawLine);
+                        } catch (err) {
+                            console.warn('Failed to parse stream chunk', err, rawLine);
+                            continue;
+                        }
+                        handleStreamEvent(event);
                     }
-                    let event;
-                    try {
-                        event = JSON.parse(rawLine);
-                    } catch (err) {
-                        console.warn('Failed to parse stream chunk', err, rawLine);
-                        continue;
-                    }
-                    handleStreamEvent(event);
                 }
             }
+
+            updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
+        } catch (err) {
+            console.error(err);
+            statusEl.textContent = `Status: Error - ${err.message}`;
+            appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
+        }
+    }
+
+    async function sendAudioToAgent(blob, mimeType) {
+        const endpoint = (serverUrlInput.value || '').trim() || serverUrlInput.dataset.defaultUrl;
+        serverUrlInput.value = endpoint;
+        try {
+            localStorage.setItem('voiceAgentServerUrl', endpoint);
+        } catch (err) {
+            console.warn('Failed to persist server URL', err);
+        }
+
+        const formData = new FormData();
+        formData.append('user_id', userId);
+        formData.append('thread_id', threadId);
+        formData.append('rooftop_id', '6');
+        const ext = mimeType && mimeType.includes('ogg') ? 'ogg' : 'webm';
+        formData.append('audio', blob, `audio.${ext}`);
+
+        try {
+            resetTurnMetrics();
+            updateStatus('Status: Contacting voice agent...');
+            console.log('[DEBUG] sending audio to agent size:', blob.size);
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`HTTP ${response.status}: ${text}`);
+            }
+
+            const payload = await response.json();
+            if (payload && payload.transcript) {
+                appendMessage('user', payload.transcript);
+            }
+            handleNonStreamingResponse(payload);
 
             updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
         } catch (err) {
@@ -624,6 +571,17 @@
     }
 
     let audioQueue = Promise.resolve();
+
+    function concatByteArrays(chunks) {
+        const total = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+        const merged = new Uint8Array(total);
+        let offset = 0;
+        for (const c of chunks) {
+            merged.set(new Uint8Array(c), offset);
+            offset += c.byteLength;
+        }
+        return merged;
+    }
 
     function playAudioSegment(segment, delayFinal = false) {
         if (!segment) return;
@@ -758,9 +716,7 @@
             case 'final_audio_text': {
                 const text = typeof event.text === 'string' ? event.text.trim() : '';
                 if (!text) break;
-                streamingTextBuffer = streamingTextBuffer
-                    ? `${streamingTextBuffer} ${text}`
-                    : text;
+                streamingTextBuffer = text;
                 const labelPrefix = '<strong>Response:</strong> ';
                 const htmlText = `${labelPrefix}${escapeHtml(streamingTextBuffer)}`;
                 if (!streamingMessageEl) {
@@ -782,8 +738,55 @@
                     );
                 }
                 break;
+            case 'audio_chunk': {
+                const b64 = event.chunk;
+                if (typeof b64 === 'string' && b64.trim()) {
+                    console.log('[AUDIO] chunk recv len', b64.length, 'format', event.format || 'mp3');
+                    try {
+                        playAudioSegment({
+                            format: event.format || 'mp3',
+                            chunks: [b64],
+                        });
+                    } catch (err) {
+                        console.warn('[AUDIO] playAudioSegment error', err);
+                    }
+                } else {
+                    console.log('[AUDIO] chunk empty or invalid');
+                }
+                break;
+            }
             default:
                 console.log('[DEBUG] Unhandled stream event', event);
+        }
+    }
+
+    function handleNonStreamingResponse(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return;
+        }
+        console.log('[DEBUG] non-stream response payload', payload);
+        const response = payload.response || {};
+        const text = response.spokenMessage
+            || response.suffixMessage
+            || response.prefixMessage
+            || response.followUpMessage
+            || '';
+        if (text) {
+            appendMessage('agent', text, 'Response');
+        } else {
+            appendMessage('agent', 'No response text returned.', 'Response');
+        }
+        const audioSegments = Array.isArray(payload.audio_segments) ? payload.audio_segments : [];
+        audioSegments.forEach((segment) => {
+            if (segment.audio && segment.audio.b64) {
+                playAudioSegment({
+                    format: segment.audio.format || 'wav',
+                    chunks: [segment.audio.b64],
+                });
+            }
+        });
+        if (!audioSegments.length) {
+            console.warn('[AUDIO] no audio_segments returned');
         }
     }
 
