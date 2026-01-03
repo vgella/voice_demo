@@ -21,12 +21,12 @@
       border: 1px solid rgba(148, 163, 184, 0.3);
       border-radius: 12px;
       padding: 20px;
-      max-width: 800px;
+      max-width: 900px;
       margin: 0 auto 20px auto;
       box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
     }
-    label { display: block; margin-bottom: 4px; font-weight: 500; }
-    input[type="text"] {
+    label { display:block; margin-bottom:4px; font-weight:500; }
+    input[type="text"]{
       width: 100%;
       padding: 10px 12px;
       border-radius: 8px;
@@ -36,6 +36,16 @@
       font-size: 1rem;
       margin-bottom: 12px;
     }
+    .row { display:flex; gap:12px; flex-wrap: wrap; align-items:center; }
+    .control {
+      display:flex; align-items:center; gap:8px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.45);
+    }
+    .control label { margin:0; font-size: .9rem; opacity:.9; }
+    .control input[type="range"]{ width: 180px; }
     button {
       cursor: pointer;
       border: none;
@@ -56,7 +66,8 @@
     }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     button:not(:disabled):hover { transform: translateY(-1px); }
-    #log { max-height: 380px; overflow-y: auto; padding-right: 8px; }
+
+    #log { max-height: 420px; overflow-y: auto; padding-right: 8px; }
     .message {
       margin-bottom: 14px;
       padding: 12px 14px;
@@ -66,40 +77,59 @@
     }
     .message.user { border-left: 3px solid #38bdf8; }
     .message.agent { border-left: 3px solid #a855f7; }
+    .meta { font-size: 0.8rem; opacity: 0.7; margin-top: 6px; }
     #status { font-size: 0.9rem; margin-top: 12px; opacity: 0.85; }
-    .small-note { font-size: 0.8rem; opacity: 0.75; }
+    .small-note { font-size: 0.8rem; opacity: 0.7; }
+    .warn { color: #fbbf24; }
     @media (max-width: 600px) {
       body { padding: 16px; }
       .panel { padding: 16px; }
+      .control input[type="range"]{ width: 140px; }
     }
   </style>
 </head>
+
 <body>
   <div class="panel">
     <h1>Voice Agent Browser Demo</h1>
     <div id="sessionInfo" class="small-note"></div>
     <p>
-      Use your microphone to send a message to the running voice agent.
-      This page records audio in the browser and sends it to the server for transcription.
+      This page continuously listens (optional) and uses thresholding to detect speech start/end.
+      It sends audio to the backend for transcription using the same request/response format you already have.
+      It also supports barge-in (interrupt playback when you start talking).
     </p>
 
     <label for="serverUrl">Voice agent URL</label>
-    <input
-      id="serverUrl"
-      type="text"
-      autocomplete="off"
-      data-default-url="http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation"
-    />
+    <input id="serverUrl" type="text" autocomplete="off" />
 
-    <div>
+    <div class="row">
       <button id="listenBtn">🎤 Start Listening</button>
       <button id="stopBtn" class="secondary">Stop Listening</button>
       <button id="sendBtn" class="secondary">Send Typed Message</button>
     </div>
 
+    <div class="row" style="margin: 6px 0 12px 0;">
+      <div class="control">
+        <label><input id="alwaysOnToggle" type="checkbox" checked /> Always listening (VAD)</label>
+      </div>
+      <div class="control">
+        <label for="vadThreshold">Threshold</label>
+        <input id="vadThreshold" type="range" min="0.01" max="0.25" step="0.005" value="0.06" />
+        <span id="vadThresholdVal" class="small-note">0.06</span>
+      </div>
+      <div class="control">
+        <label for="silenceMs">Silence ms</label>
+        <input id="silenceMs" type="range" min="400" max="3500" step="50" value="1200" />
+        <span id="silenceMsVal" class="small-note">1200</span>
+      </div>
+      <div class="control">
+        <label><input id="bargeInToggle" type="checkbox" checked /> Allow interrupt</label>
+      </div>
+    </div>
+
     <input id="textInput" type="text" placeholder="...or type your question here" />
     <div id="status">Status: Idle</div>
-    <div class="small-note" id="hint"></div>
+    <div id="originHint" class="small-note"></div>
   </div>
 
   <div class="panel">
@@ -108,375 +138,590 @@
     <div id="latency" class="small-note"></div>
   </div>
 
-<script>
-  const listenBtn = document.getElementById('listenBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const sendBtn = document.getElementById('sendBtn');
-  const statusEl = document.getElementById('status');
-  const logEl = document.getElementById('log');
-  const textInput = document.getElementById('textInput');
-  const serverUrlInput = document.getElementById('serverUrl');
-  const latencyEl = document.getElementById('latency');
-  const sessionInfoEl = document.getElementById('sessionInfo');
-  const hintEl = document.getElementById('hint');
+  <script>
+    // -----------------------------
+    // Defaults / helpers
+    // -----------------------------
+    const listenBtn = document.getElementById('listenBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const textInput = document.getElementById('textInput');
+    const serverUrlInput = document.getElementById('serverUrl');
+    const latencyEl = document.getElementById('latency');
+    const sessionInfoEl = document.getElementById('sessionInfo');
+    const originHintEl = document.getElementById('originHint');
 
-  // REQUIRED DEFAULT (your exact URL)
-  const HARD_DEFAULT =
-    "http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation";
+    const alwaysOnToggle = document.getElementById('alwaysOnToggle');
+    const bargeInToggle = document.getElementById('bargeInToggle');
+    const vadThreshold = document.getElementById('vadThreshold');
+    const vadThresholdVal = document.getElementById('vadThresholdVal');
+    const silenceMs = document.getElementById('silenceMs');
+    const silenceMsVal = document.getElementById('silenceMsVal');
 
-  const DEFAULT_SERVER_URL =
-    window.VOICE_AGENT_URL ||
-    localStorage.getItem('voiceAgentServerUrl') ||
-    serverUrlInput.dataset.defaultUrl ||
-    HARD_DEFAULT;
+    // ✅ REQUIRED default URL (HTTP + :5000)
+    const DEFAULT_SERVER_URL =
+      window.VOICE_AGENT_URL ||
+      localStorage.getItem('voiceAgentServerUrl') ||
+      'http://py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com:5000/voice/conversation';
 
-  serverUrlInput.value = DEFAULT_SERVER_URL;
+    // If user pastes host/path without scheme, auto-prepend http:// (NOT https://)
+    function normalizeEndpoint(raw) {
+      const trimmed = (raw || '').trim();
+      if (!trimmed) return DEFAULT_SERVER_URL;
 
-  serverUrlInput.addEventListener('change', () => {
-    try { localStorage.setItem('voiceAgentServerUrl', serverUrlInput.value.trim()); }
-    catch (err) { console.warn('Failed to persist server URL', err); }
-  });
+      // Already absolute
+      if (/^https?:\/\//i.test(trimmed)) return trimmed;
 
-  function loadOrInitUserId() {
-    const storageKey = 'voiceAgentUserId';
-    const stored = localStorage.getItem(storageKey);
-    if (stored) return stored;
-    const token = crypto.randomUUID().split('-')[0];
-    const generated = `VOICETEST-${token}`;
-    localStorage.setItem(storageKey, generated);
-    return generated;
-  }
+      // If it looks like a domain/hostname, assume http://
+      if (trimmed.includes('.') && !trimmed.startsWith('/')) {
+        return `http://${trimmed}`;
+      }
 
-  const userId = loadOrInitUserId();
-  const threadId = crypto.randomUUID();
-  sessionInfoEl.textContent = `Session ID: ${userId}`;
-
-  function updateStatus(text) { statusEl.textContent = text; }
-
-  let micAccessGranted = false;
-  let micStream = null;
-  let micStreamReadyPromise = null;
-  let mediaRecorder = null;
-  let recordingActive = false;
-  let recordedChunks = [];
-  let lastRecorderMime = 'audio/webm';
-
-  // Playback queue (prevents overlapping audio)
-  let audioQueue = Promise.resolve();
-
-  function appendMessage(role, text, label = null) {
-    const item = document.createElement('div');
-    item.className = `message ${role}`;
-    const title = label ? `<strong>${label}:</strong> ` : '';
-    item.innerHTML = `${title}${escapeHtml(text)}`;
-    logEl.appendChild(item);
-    logEl.scrollTop = logEl.scrollHeight;
-    return item;
-  }
-
-  function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text ?? '';
-    return div.innerHTML;
-  }
-
-  function resetLatency() { latencyEl.textContent = ''; }
-
-  async function ensureMicPipeline() {
-    if (micAccessGranted) return true;
-    if (micStreamReadyPromise) {
-      try { await micStreamReadyPromise; return micAccessGranted; } catch { return false; }
-    }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      updateStatus('Status: Microphone not supported in this browser.');
-      return false;
+      // Otherwise treat as relative path
+      return trimmed;
     }
 
-    micStreamReadyPromise = (async () => {
+    serverUrlInput.value = normalizeEndpoint(DEFAULT_SERVER_URL);
+
+    serverUrlInput.addEventListener('change', () => {
+      const normalized = normalizeEndpoint(serverUrlInput.value);
+      serverUrlInput.value = normalized;
+      try { localStorage.setItem('voiceAgentServerUrl', normalized); } catch (err) {}
+    });
+
+    vadThresholdVal.textContent = Number(vadThreshold.value).toFixed(3);
+    silenceMsVal.textContent = String(silenceMs.value);
+
+    vadThreshold.addEventListener('input', () => {
+      vadThresholdVal.textContent = Number(vadThreshold.value).toFixed(3);
+    });
+    silenceMs.addEventListener('input', () => {
+      silenceMsVal.textContent = String(silenceMs.value);
+    });
+
+    // -----------------------------
+    // Session IDs
+    // -----------------------------
+    function loadOrInitUserId() {
+      const storageKey = 'voiceAgentUserId';
+      const stored = localStorage.getItem(storageKey);
+      if (stored) return stored;
+      const token = crypto.randomUUID().split('-')[0];
+      const generated = `VOICETEST-${token}`;
+      localStorage.setItem(storageKey, generated);
+      return generated;
+    }
+
+    const userId = loadOrInitUserId();
+    const threadId = crypto.randomUUID();
+    const rooftopId = '6';
+
+    sessionInfoEl.textContent = `Session ID: ${userId}`;
+
+    let currentTurnMetrics = { preambleLatency: null, finalLatency: null };
+
+    function updateStatus(text) { statusEl.textContent = text; }
+    function resetTurnMetrics() {
+      currentTurnMetrics = { preambleLatency: null, finalLatency: null };
+      latencyEl.textContent = '';
+    }
+    function applyTurnMetrics() {
+      const parts = [];
+      if (typeof currentTurnMetrics.preambleLatency === 'number') {
+        parts.push(`Preamble: ${Math.round(currentTurnMetrics.preambleLatency)} ms`);
+      }
+      if (typeof currentTurnMetrics.finalLatency === 'number') {
+        parts.push(`Full response: ${Math.round(currentTurnMetrics.finalLatency)} ms`);
+      }
+      latencyEl.textContent = parts.join(' • ');
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function appendMessage(role, text, label = null) {
+      const item = document.createElement('div');
+      item.className = `message ${role}`;
+      const title = label ? `<strong>${label}:</strong> ` : '';
+      item.innerHTML = `${title}${escapeHtml(text)}`;
+      logEl.appendChild(item);
+      logEl.scrollTop = logEl.scrollHeight;
+      return item;
+    }
+
+    // -----------------------------
+    // Mic + VAD + MediaRecorder
+    // -----------------------------
+    let micAccessGranted = false;
+    let micStream = null;
+    let mediaRecorder = null;
+    let recordingActive = false;
+    let recordedChunks = [];
+    let lastRecorderMime = 'audio/webm';
+
+    // VAD
+    let audioContext = null;
+    let analyser = null;
+    let analyserData = null;
+    let vadLoopRunning = false;
+    let silenceStartAt = null;
+
+    // UI state
+    let listeningArmed = false;
+
+    // Playback / barge-in
+    let audioQueue = Promise.resolve();
+    let playbackController = null;
+    let audioPlaying = false;
+
+    function pickRecorderMimeType() {
+      if (!window.MediaRecorder) return '';
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/webm',
+        'audio/ogg',
+      ];
+      for (const c of candidates) {
+        if (MediaRecorder.isTypeSupported(c)) return c;
+      }
+      return '';
+    }
+
+    async function ensureMicPipeline() {
+      if (micAccessGranted && micStream && analyser && audioContext) return true;
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        updateStatus('Status: Microphone not supported in this browser.');
+        return false;
+      }
+
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
+            sampleRate: 16000,
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
+            autoGainControl: true,
           }
         });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(micStream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        analyserData = new Uint8Array(analyser.fftSize);
+
         micAccessGranted = true;
+        return true;
       } catch (err) {
-        micAccessGranted = false;
-        micStream = null;
         console.error('Microphone permission error', err);
         updateStatus('Status: Microphone permission denied');
-        throw err;
+        micAccessGranted = false;
+        micStream = null;
+        return false;
       }
-    })();
-
-    try { await micStreamReadyPromise; return micAccessGranted; }
-    catch { micStreamReadyPromise = null; return false; }
-  }
-
-  function pickRecorderMimeType() {
-    if (!window.MediaRecorder) return '';
-    const candidates = [
-      'audio/webm;codecs=opus',
-      'audio/ogg;codecs=opus',
-      'audio/webm',
-      'audio/ogg',
-    ];
-    for (const c of candidates) {
-      if (MediaRecorder.isTypeSupported(c)) return c;
-    }
-    return '';
-  }
-
-  function startRecording() {
-    if (!micStream || recordingActive) return;
-
-    const mimeType = pickRecorderMimeType();
-    recordedChunks = [];
-    lastRecorderMime = mimeType || 'audio/webm';
-
-    try {
-      mediaRecorder = mimeType ? new MediaRecorder(micStream, { mimeType }) : new MediaRecorder(micStream);
-    } catch (err) {
-      console.error('Failed to start recorder', err);
-      updateStatus('Status: Recorder failed to start');
-      return;
     }
 
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) recordedChunks.push(event.data);
-    };
+    function startRecording() {
+      if (!micStream || recordingActive) return;
 
-    mediaRecorder.onstop = async () => {
-      recordingActive = false;
-      const blob = new Blob(recordedChunks, { type: lastRecorderMime });
-      if (blob.size === 0) {
-        updateStatus('Status: No audio captured');
+      const mimeType = pickRecorderMimeType();
+      recordedChunks = [];
+      lastRecorderMime = mimeType || 'audio/webm';
+
+      try {
+        mediaRecorder = mimeType
+          ? new MediaRecorder(micStream, { mimeType })
+          : new MediaRecorder(micStream);
+      } catch (err) {
+        console.error('Failed to start recorder', err);
+        updateStatus('Status: Recorder failed to start');
+        return;
+      }
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        recordingActive = false;
+        const blob = new Blob(recordedChunks, { type: lastRecorderMime });
+        recordedChunks = [];
+        if (blob.size === 0) return;
+        await sendAudioToAgent(blob, lastRecorderMime);
+      };
+
+      mediaRecorder.start();
+      recordingActive = true;
+      updateStatus('Status: Recording...');
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && recordingActive) {
+        try { mediaRecorder.stop(); } catch (err) {}
+      }
+    }
+
+    function computeRmsVolume() {
+      if (!analyser || !analyserData) return 0;
+      analyser.getByteTimeDomainData(analyserData);
+      let sum = 0;
+      for (let i = 0; i < analyserData.length; i++) {
+        const normalized = (analyserData[i] - 128) / 128;
+        sum += normalized * normalized;
+      }
+      return Math.sqrt(sum / analyserData.length);
+    }
+
+    function armListening() {
+      listeningArmed = true;
+      listenBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      if (alwaysOnToggle.checked) {
+        updateStatus('Status: Waiting for speech...');
+        startVadLoop();
+      } else {
+        startRecording();
+      }
+    }
+
+    function disarmListening() {
+      listeningArmed = false;
+      listenBtn.disabled = false;
+      stopBtn.disabled = true;
+
+      stopRecording();
+      stopVadLoop();
+      updateStatus('Status: Idle');
+    }
+
+    function startVadLoop() {
+      if (vadLoopRunning) return;
+      if (!analyser) return;
+
+      vadLoopRunning = true;
+      silenceStartAt = null;
+
+      const loop = () => {
+        if (!vadLoopRunning) return;
+
+        if (!listeningArmed || !alwaysOnToggle.checked) {
+          vadLoopRunning = false;
+          return;
+        }
+
+        const threshold = Number(vadThreshold.value);
+        const silenceThresholdMs = Number(silenceMs.value);
+        const volume = computeRmsVolume();
+
+        // ✅ Interrupt (barge-in)
+        if (audioPlaying && bargeInToggle.checked && volume > threshold) {
+          stopCurrentPlayback();
+        }
+
+        if (volume > threshold) {
+          silenceStartAt = null;
+          if (!recordingActive) startRecording();
+        } else {
+          if (recordingActive) {
+            if (silenceStartAt === null) {
+              silenceStartAt = performance.now();
+            } else if (performance.now() - silenceStartAt > silenceThresholdMs) {
+              silenceStartAt = null;
+              stopRecording();
+            }
+          }
+        }
+
+        requestAnimationFrame(loop);
+      };
+
+      requestAnimationFrame(loop);
+    }
+
+    function stopVadLoop() {
+      vadLoopRunning = false;
+      silenceStartAt = null;
+    }
+
+    // -----------------------------
+    // Playback helpers
+    // -----------------------------
+    function playAudioSegment(segment, delayFirstChunk = false) {
+      if (!segment) return;
+      const chunkList = Array.isArray(segment.chunks) && segment.chunks.length
+        ? [...segment.chunks]
+        : (segment.base64 ? [segment.base64] : []);
+      if (!chunkList.length) return;
+
+      audioQueue = audioQueue.then(() => new Promise((resolve) => {
+        audioPlaying = true;
+
+        const playNext = (index) => {
+          if (index >= chunkList.length) {
+            audioPlaying = false;
+            playbackController = null;
+            resolve();
+            return;
+          }
+
+          try {
+            const binary = atob(chunkList[index]);
+            const buffer = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
+
+            const blob = new Blob([buffer], { type: `audio/${segment.format || 'mp3'}` });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+
+            let cancelled = false;
+            playbackController = {
+              abort() {
+                if (cancelled) return;
+                cancelled = true;
+                try { audio.pause(); } catch (err) {}
+                URL.revokeObjectURL(url);
+                audioPlaying = false;
+                playbackController = null;
+                resolve();
+              }
+            };
+
+            const startPlayback = () =>
+              audio.play().catch((err) => {
+                console.warn('Failed to play audio chunk', err);
+                URL.revokeObjectURL(url);
+                playbackController = null;
+                playNext(index + 1);
+              });
+
+            audio.onended = () => {
+              URL.revokeObjectURL(url);
+              if (cancelled) return;
+              playNext(index + 1);
+            };
+            audio.onerror = () => {
+              URL.revokeObjectURL(url);
+              if (cancelled) return;
+              playNext(index + 1);
+            };
+
+            if (delayFirstChunk && index === 0) setTimeout(startPlayback, 350);
+            else startPlayback();
+          } catch (err) {
+            console.warn('Failed to decode audio chunk', err);
+            playNext(index + 1);
+          }
+        };
+
+        playNext(0);
+      }));
+    }
+
+    function stopCurrentPlayback() {
+      if (playbackController) {
+        const controller = playbackController;
+        playbackController = null;
+        controller.abort();
+      } else {
+        audioPlaying = false;
+      }
+    }
+
+    // -----------------------------
+    // Networking
+    // -----------------------------
+    async function sendToAgent(message) {
+      const endpoint = normalizeEndpoint(serverUrlInput.value);
+      serverUrlInput.value = endpoint;
+      try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch (err) {}
+
+      const requestBody = {
+        user_id: userId,
+        thread_id: threadId,
+        rooftop_id: rooftopId,
+        message,
+      };
+
+      try {
+        resetTurnMetrics();
+        updateStatus('Status: Contacting voice agent...');
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+
+        const payload = await response.json();
+        handleNonStreamingResponse(payload);
+
+        updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = `Status: Error - ${err.message}`;
+        appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
+      }
+    }
+
+    async function sendAudioToAgent(blob, mimeType) {
+      const endpoint = normalizeEndpoint(serverUrlInput.value);
+      serverUrlInput.value = endpoint;
+      try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch (err) {}
+
+      const formData = new FormData();
+      formData.append('user_id', userId);
+      formData.append('thread_id', threadId);
+      formData.append('rooftop_id', rooftopId);
+
+      const ext = (mimeType && mimeType.includes('ogg')) ? 'ogg' : 'webm';
+      formData.append('audio', blob, `audio.${ext}`);
+
+      try {
+        resetTurnMetrics();
+        updateStatus('Status: Contacting voice agent...');
+
+        const response = await fetch(endpoint, { method: 'POST', body: formData });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+
+        const payload = await response.json();
+        if (payload && payload.transcript) appendMessage('user', payload.transcript);
+
+        handleNonStreamingResponse(payload);
+        updateStatus(listeningArmed ? 'Status: Waiting for speech...' : 'Status: Ready');
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = `Status: Error - ${err.message}`;
+        appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
+      }
+    }
+
+    function handleNonStreamingResponse(payload) {
+      if (!payload || typeof payload !== 'object') return;
+
+      const response = payload.response || {};
+      const text =
+        response.spokenMessage ||
+        response.suffixMessage ||
+        response.prefixMessage ||
+        response.followUpMessage ||
+        '';
+
+      if (text) appendMessage('agent', text, 'Response');
+      else appendMessage('agent', 'No response text returned.', 'Response');
+
+      const audioSegments = Array.isArray(payload.audio_segments) ? payload.audio_segments : [];
+      audioSegments.forEach((segment, idx) => {
+        if (segment.audio && segment.audio.b64) {
+          playAudioSegment({
+            format: segment.audio.format || 'wav',
+            chunks: [segment.audio.b64],
+          }, idx === 0);
+        }
+      });
+    }
+
+    // -----------------------------
+    // UI wiring
+    // -----------------------------
+    stopBtn.disabled = true;
+
+    listenBtn.addEventListener('click', async () => {
+      if (!window.MediaRecorder) {
+        listenBtn.disabled = true;
+        stopBtn.disabled = true;
+        updateStatus('Status: MediaRecorder not supported in this browser.');
+        return;
+      }
+      updateStatus('Status: Initializing microphone...');
+      const ready = await ensureMicPipeline();
+      if (!ready) {
         listenBtn.disabled = false;
         stopBtn.disabled = true;
         return;
       }
-      await sendAudioToAgent(blob, lastRecorderMime);
-    };
+      armListening();
+    });
 
-    mediaRecorder.start();
-    recordingActive = true;
-    updateStatus('Status: Recording...');
-    listenBtn.disabled = true;
-    stopBtn.disabled = false;
-  }
+    stopBtn.addEventListener('click', () => {
+      disarmListening();
+      stopCurrentPlayback();
+    });
 
-  function stopRecording() {
-    if (mediaRecorder && recordingActive) {
-      try { mediaRecorder.stop(); } catch (err) { console.warn('mediaRecorder.stop error', err); }
-    }
-  }
+    sendBtn.addEventListener('click', () => {
+      const message = textInput.value.trim();
+      if (!message) return;
+      appendMessage('user', message);
+      sendToAgent(message);
+      textInput.value = '';
+    });
 
-  async function startListening() {
-    if (!window.MediaRecorder) {
-      listenBtn.disabled = true;
-      stopBtn.disabled = true;
-      updateStatus('Status: MediaRecorder not supported in this browser.');
-      return;
-    }
-    updateStatus('Status: Initializing microphone...');
-    const ready = await ensureMicPipeline();
-    if (!ready) {
-      listenBtn.disabled = false;
-      stopBtn.disabled = true;
-      return;
-    }
-    startRecording();
-  }
+    textInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') sendBtn.click();
+    });
 
-  function stopListening() {
-    stopRecording();
-    updateStatus('Status: Idle');
-    listenBtn.disabled = false;
-    stopBtn.disabled = true;
-  }
+    alwaysOnToggle.addEventListener('change', () => {
+      if (!listeningArmed) return;
+      stopRecording();
+      stopVadLoop();
+      if (alwaysOnToggle.checked) {
+        updateStatus('Status: Waiting for speech...');
+        startVadLoop();
+      } else {
+        startRecording();
+      }
+    });
 
-  stopBtn.disabled = true;
+    // -----------------------------
+    // Origin / mic permission hint
+    // -----------------------------
+    (async () => {
+      // NOTE: mic permission persistence is best on https/localhost.
+      // Your backend is http; that's fine for a demo but some browsers may be stricter depending on where you host this file.
+      const isSecureOrigin =
+        window.location.protocol === 'https:' ||
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1' ||
+        window.location.hostname === 'py-app-capture-agent-svc-dev-1-1768200251.us-east-1.elb.amazonaws.com';
 
-  listenBtn.addEventListener('click', () => startListening());
-  stopBtn.addEventListener('click', () => stopListening());
-
-  sendBtn.addEventListener('click', () => {
-    const message = textInput.value.trim();
-    if (!message) return;
-    appendMessage('user', message);
-    sendToAgent(message);
-    textInput.value = '';
-  });
-
-  textInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') sendBtn.click();
-  });
-
-  function getEndpoint() {
-    const endpoint = (serverUrlInput.value || '').trim() || HARD_DEFAULT;
-    serverUrlInput.value = endpoint;
-    try { localStorage.setItem('voiceAgentServerUrl', endpoint); } catch {}
-    return endpoint;
-  }
-
-  async function sendToAgent(message) {
-    const endpoint = getEndpoint();
-    const requestBody = { user_id: userId, thread_id: threadId, rooftop_id: '6', message };
-
-    try {
-      resetLatency();
-      updateStatus('Status: Contacting voice agent...');
-      const t0 = performance.now();
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`HTTP ${response.status}: ${text}`);
+      if (!isSecureOrigin) {
+        originHintEl.innerHTML =
+          '<span class="warn">Tip:</span> For mic permission reliability, run this page on https://localhost (or https).';
+      } else {
+        originHintEl.textContent = '';
       }
 
-      const payload = await response.json();
-      latencyEl.textContent = `Round-trip: ${Math.round(performance.now() - t0)} ms`;
-      handleNonStreamingResponse(payload);
-      updateStatus('Status: Ready');
-    } catch (err) {
-      console.error(err);
-      updateStatus(`Status: Error - ${err.message}`);
-      appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
-    }
-  }
-
-  async function sendAudioToAgent(blob, mimeType) {
-    const endpoint = getEndpoint();
-
-    const formData = new FormData();
-    formData.append('user_id', userId);
-    formData.append('thread_id', threadId);
-    formData.append('rooftop_id', '6');
-    const ext = (mimeType && mimeType.includes('ogg')) ? 'ogg' : 'webm';
-    formData.append('audio', blob, `audio.${ext}`);
-
-    try {
-      resetLatency();
-      updateStatus('Status: Sending audio...');
-      const t0 = performance.now();
-
-      const response = await fetch(endpoint, { method: 'POST', body: formData });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`HTTP ${response.status}: ${text}`);
+      if (navigator.permissions && navigator.permissions.query) {
+        try {
+          const status = await navigator.permissions.query({ name: 'microphone' });
+          if (status.state === 'denied') {
+            appendMessage(
+              'agent',
+              'Microphone access is blocked. Click the lock icon → Site settings → allow Microphone.',
+              'Notice'
+            );
+          }
+        } catch (err) {}
       }
-
-      const payload = await response.json();
-      latencyEl.textContent = `Round-trip: ${Math.round(performance.now() - t0)} ms`;
-
-      if (payload && payload.transcript) appendMessage('user', payload.transcript);
-      handleNonStreamingResponse(payload);
-
-      updateStatus('Status: Ready');
-    } catch (err) {
-      console.error(err);
-      updateStatus(`Status: Error - ${err.message}`);
-      appendMessage('agent', 'I hit a snag reaching the service. Try again in a moment.');
-    } finally {
-      // re-enable buttons after a voice turn
-      listenBtn.disabled = false;
-      stopBtn.disabled = true;
-    }
-  }
-
-  function playWavBase64(b64, formatHint = 'wav') {
-    if (!b64 || typeof b64 !== 'string') return;
-
-    audioQueue = audioQueue.then(() => new Promise((resolve) => {
-      try {
-        const binary = atob(b64);
-        const buffer = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
-
-        const blob = new Blob([buffer], { type: `audio/${formatHint}` });
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-
-        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-
-        // Autoplay sometimes fails unless user clicked a button.
-        audio.play().catch((err) => {
-          console.warn('Audio play failed (autoplay policy?)', err);
-          URL.revokeObjectURL(url);
-          resolve();
-        });
-      } catch (e) {
-        console.warn('Failed decoding base64 audio', e);
-        resolve();
-      }
-    }));
-  }
-
-  function handleNonStreamingResponse(payload) {
-    if (!payload || typeof payload !== 'object') return;
-
-    const response = payload.response || {};
-    const spoken =
-      [response.prefixMessage, response.suffixMessage, response.followUpMessage]
-        .filter(Boolean)
-        .join(' ')
-        .trim();
-
-    if (spoken) appendMessage('agent', spoken, 'Response');
-    else appendMessage('agent', 'No response text returned.', 'Response');
-
-    const audioSegments = Array.isArray(payload.audio_segments) ? payload.audio_segments : [];
-    if (!audioSegments.length) {
-      console.warn('[AUDIO] no audio_segments returned');
-      return;
-    }
-
-    // Ensure sequence order
-    audioSegments
-      .slice()
-      .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
-      .forEach((seg) => {
-        if (seg?.audio?.b64) playWavBase64(seg.audio.b64, seg.audio.format || 'wav');
-      });
-  }
-
-  // Secure context hint for mic:
-  (async () => {
-    const isLocalhost =
-      location.hostname === 'localhost' ||
-      location.hostname === '127.0.0.1' ||
-      location.hostname === '[::1]';
-    const isSecureContextOk = window.isSecureContext || isLocalhost;
-
-    hintEl.textContent = isSecureContextOk
-      ? 'Tip: If you don’t hear audio, check browser autoplay + volume, and confirm audio_segments are returned.'
-      : 'Mic tip: Open this page via http://localhost (recommended) or HTTPS. Opening from file:// may block microphone access.';
-
-    if (navigator.permissions && navigator.permissions.query) {
-      try {
-        const st = await navigator.permissions.query({ name: 'microphone' });
-        if (st.state === 'denied') {
-          appendMessage(
-            'agent',
-            'Microphone access is blocked. Click the lock icon → Site settings → allow Microphone.',
-            'Notice'
-          );
-        }
-      } catch (err) {
-        // ignore
-      }
-    }
-  })();
-</script>
+    })();
+  </script>
 </body>
 </html>
